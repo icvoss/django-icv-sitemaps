@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-icv-sitemaps"
+version = "0.2.3"
+description = "Scalable sitemap generation and web discovery infrastructure for Django — background XML sitemaps (standard/image/video/news), robots.txt, llms.txt, ads.txt, security.txt, humans.txt."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{name = "Nigel Copley"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = [
+    "django",
+    "sitemap",
+    "robots-txt",
+    "seo",
+    "discovery",
+    "llms-txt",
+    "ads-txt",
+]
+dependencies = [
+    "Django>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/nigelcopley/icv-django"
+Documentation = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps"
+Changelog = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps/CHANGELOG.md"
+"Issue Tracker" = "https://github.com/nigelcopley/icv-django/issues"
+"Source Code" = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps"
+
+[project.optional-dependencies]
+celery = ["celery>=5.3"]
+dev = [
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+    "pytest-cov>=5.0",
+    "factory-boy>=3.3",
+    "ruff>=0.5.0",
+    "mypy>=1.10",
+    "django-stubs>=5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# pytest config is centralised in the root pyproject.toml.
+# Run tests from the project root: pytest packages/icv-sitemaps/tests/
+
+# ruff config is centralised in the root pyproject.toml.
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["mypy_django_plugin.main"]
+strict = false
+
+[tool.django-stubs]
+django_settings_module = "tests.settings"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/migrations/*", "*/testing/*"]
+
+[tool.coverage.report]
+fail_under = 90
