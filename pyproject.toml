@@ -35,11 +35,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nigelcopley/icv-django"
-Documentation = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps"
-Changelog = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps/CHANGELOG.md"
-"Issue Tracker" = "https://github.com/nigelcopley/icv-django/issues"
-"Source Code" = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-sitemaps"
+Homepage = "https://github.com/nigelcopley/icv-oss"
+Documentation = "https://github.com/nigelcopley/icv-oss/tree/main/packages/icv-sitemaps"
+Changelog = "https://github.com/nigelcopley/icv-oss/tree/main/packages/icv-sitemaps/CHANGELOG.md"
+"Issue Tracker" = "https://github.com/nigelcopley/icv-oss/issues"
+"Source Code" = "https://github.com/nigelcopley/icv-oss/tree/main/packages/icv-sitemaps"
 
 [project.optional-dependencies]
 celery = ["celery>=5.3"]

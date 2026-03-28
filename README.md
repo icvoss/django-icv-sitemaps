@@ -11,7 +11,7 @@ Designed for sites with millions of URLs where Django's built-in
 `django.contrib.sitemaps` is impractical (memory-hungry querysets, blocking
 request-time generation, no incremental updates).
 
-Part of the [ICV-Django](https://github.com/nigelcopley/icv-django) ecosystem,
+Part of the [ICV-Django](https://github.com/nigelcopley/icv-oss) ecosystem,
 but **fully standalone** — no other ICV packages required.
 
 ---
