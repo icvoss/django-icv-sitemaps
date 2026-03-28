@@ -1,15 +1,24 @@
 # django-icv-sitemaps
 
+[![CI](https://github.com/nigelcopley/icv-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/nigelcopley/icv-oss/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
+[![Python](https://img.shields.io/pypi/pyversions/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
+[![Django](https://img.shields.io/badge/django-5.1%2B-0C4B33)](https://www.djangoproject.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Scalable sitemap generation and web discovery infrastructure for Django —
-background XML sitemaps (standard/image/video/news), `robots.txt`, `llms.txt`,
-`ads.txt`, `security.txt`, and `humans.txt`.
+Django's built-in `django.contrib.sitemaps` loads every URL into memory at
+request time. On a site with tens of thousands of pages that means slow
+responses, high memory pressure, and no incremental updates when content
+changes. At a million URLs it simply does not work.
 
-Designed for sites with millions of URLs where Django's built-in
-`django.contrib.sitemaps` is impractical (memory-hungry querysets, blocking
-request-time generation, no incremental updates).
+`django-icv-sitemaps` replaces that approach entirely. Sitemaps are built in
+the background by Celery tasks, written atomically to any Django storage
+backend (local, S3, GCS), and served as static files. Only sections whose
+content has changed are ever rebuilt. The full protocol is covered: standard,
+image, video, and news sitemaps, automatic file splitting, gzip compression,
+and search engine pinging — plus a complete set of web discovery files
+(`robots.txt`, `llms.txt`, `ads.txt`, `security.txt`, `humans.txt`) managed
+from the database.
 
 Part of the [ICV-Django](https://github.com/nigelcopley/icv-oss) ecosystem,
 but **fully standalone** — no other ICV packages required.
@@ -519,7 +528,7 @@ pytest tests/ -v
 ## Requirements
 
 - Python 3.11+
-- Django 4.2+
+- Django 5.1+
 - httpx 0.27+ (for search engine pings)
 - Celery 5.3+ (optional, for background generation)
 
