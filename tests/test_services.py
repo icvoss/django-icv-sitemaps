@@ -655,7 +655,6 @@ class TestCheckRedirect:
 
     def test_inactive_excluded(self, db):
         from icv_sitemaps.services.redirects import check_redirect
-
         from icv_sitemaps.testing.factories import RedirectRuleFactory
 
         RedirectRuleFactory(source_pattern="/inactive/", is_active=False)

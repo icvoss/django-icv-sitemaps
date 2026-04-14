@@ -3,10 +3,10 @@
 from django.contrib.admin.sites import AdminSite
 
 from icv_sitemaps.admin import (
-    RedirectLogAdmin,
-    RedirectRuleAdmin,
     AdsEntryAdmin,
     DiscoveryFileConfigAdmin,
+    RedirectLogAdmin,
+    RedirectRuleAdmin,
     RobotsRuleAdmin,
     SitemapFileAdmin,
     SitemapGenerationLogAdmin,

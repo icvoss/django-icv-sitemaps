@@ -98,10 +98,10 @@ class Command(BaseCommand):
             with open(filepath, newline="") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
-        except FileNotFoundError:
-            raise CommandError(f"File not found: {filepath}")
+        except FileNotFoundError as exc:
+            raise CommandError(f"File not found: {filepath}") from exc
         except Exception as exc:
-            raise CommandError(f"Error reading CSV: {exc}")
+            raise CommandError(f"Error reading CSV: {exc}") from exc
 
         if not rows:
             self.stdout.write("CSV file is empty.")
@@ -125,13 +125,15 @@ class Command(BaseCommand):
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for rule in rules:
-                writer.writerow({
-                    "source_pattern": rule.source_pattern,
-                    "destination": rule.destination,
-                    "status_code": rule.status_code,
-                    "match_type": rule.match_type,
-                    "name": rule.name,
-                })
+                writer.writerow(
+                    {
+                        "source_pattern": rule.source_pattern,
+                        "destination": rule.destination,
+                        "status_code": rule.status_code,
+                        "match_type": rule.match_type,
+                        "name": rule.name,
+                    }
+                )
 
         self.stdout.write(f"Exported {rules.count()} rule(s) to {filepath}.")
 

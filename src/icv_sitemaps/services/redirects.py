@@ -288,11 +288,8 @@ def get_top_404s(
     """
     from icv_sitemaps.models.redirects import RedirectLog
 
-    return (
-        RedirectLog.objects.filter(
-            tenant_id=tenant_id,
-            resolved=False,
-            hit_count__gte=min_hits,
-        )
-        .order_by("-hit_count")[:limit]
-    )
+    return RedirectLog.objects.filter(
+        tenant_id=tenant_id,
+        resolved=False,
+        hit_count__gte=min_hits,
+    ).order_by("-hit_count")[:limit]

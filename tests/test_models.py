@@ -226,23 +226,15 @@ class TestRedirectRule:
 
         from icv_sitemaps.models.redirects import RedirectRule
 
-        RedirectRule.objects.create(
-            name="first", source_pattern="/dup/", destination="/a/", match_type="exact"
-        )
+        RedirectRule.objects.create(name="first", source_pattern="/dup/", destination="/a/", match_type="exact")
         with pytest.raises(IntegrityError):
-            RedirectRule.objects.create(
-                name="second", source_pattern="/dup/", destination="/b/", match_type="exact"
-            )
+            RedirectRule.objects.create(name="second", source_pattern="/dup/", destination="/b/", match_type="exact")
 
     def test_prefix_allows_duplicates(self, db):
         from icv_sitemaps.models.redirects import RedirectRule
 
-        RedirectRule.objects.create(
-            name="first", source_pattern="/prefix/", destination="/a/", match_type="prefix"
-        )
-        RedirectRule.objects.create(
-            name="second", source_pattern="/prefix/", destination="/b/", match_type="prefix"
-        )
+        RedirectRule.objects.create(name="first", source_pattern="/prefix/", destination="/a/", match_type="prefix")
+        RedirectRule.objects.create(name="second", source_pattern="/prefix/", destination="/b/", match_type="prefix")
         assert RedirectRule.objects.count() == 2
 
 

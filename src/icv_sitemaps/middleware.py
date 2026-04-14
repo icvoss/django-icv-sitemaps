@@ -109,9 +109,8 @@ class RedirectMiddleware:
             return
 
         # Sample rate check.
-        if ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE < 1.0:
-            if random.random() > ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE:  # noqa: S311
-                return
+        if ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE < 1.0 and random.random() > ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE:  # noqa: S311, E501
+            return
 
         path = request.path
 

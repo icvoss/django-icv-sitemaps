@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("icv_sitemaps", "0002_alter_sitemapsection_model_path_and_more"),
     ]

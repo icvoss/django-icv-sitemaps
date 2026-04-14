@@ -278,6 +278,7 @@ class RedirectRuleAdmin(admin.ModelAdmin):
         "hit_count",
         "is_active",
     ]
+    list_display_links = ["source_pattern"]
     list_filter = ["status_code", "match_type", "is_active", "source"]
     list_editable = ["is_active", "priority"]
     search_fields = ["source_pattern", "destination", "name", "notes"]
