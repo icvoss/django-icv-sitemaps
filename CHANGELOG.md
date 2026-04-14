@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-14
+
+### Fixed
+
+- All views now accept `HEAD` requests — replaced `@require_GET` with
+  `@require_http_methods(["GET", "HEAD"])` on all 8 view functions.
+  `HEAD` is required by the HTTP spec wherever `GET` is accepted, and
+  monitoring tools and crawlers commonly use it.
+
 ## [0.4.1] - 2026-04-14
 
 ### Fixed

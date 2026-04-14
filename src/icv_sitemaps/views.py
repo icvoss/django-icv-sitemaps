@@ -8,7 +8,7 @@ import re
 
 from django.core.cache import cache
 from django.http import Http404, HttpResponse, HttpResponsePermanentRedirect
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _validate_filename(filename: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def sitemap_index_view(request) -> HttpResponse:
     """Serve the sitemap index file from storage (GET /sitemap.xml).
 
@@ -149,7 +149,7 @@ def sitemap_index_view(request) -> HttpResponse:
     raise Http404("Sitemap index not found.")
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def sitemap_file_view(request, filename: str) -> HttpResponse:
     """Serve an individual sitemap file from storage (GET /sitemaps/<path:filename>).
 
@@ -199,7 +199,7 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
 # ---------------------------------------------------------------------------
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def robots_txt_view(request) -> HttpResponse:
     """Serve robots.txt (GET /robots.txt).
 
@@ -225,7 +225,7 @@ def robots_txt_view(request) -> HttpResponse:
     return HttpResponse(content, content_type="text/plain")
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def llms_txt_view(request) -> HttpResponse:
     """Serve llms.txt (GET /llms.txt).
 
@@ -249,7 +249,7 @@ def llms_txt_view(request) -> HttpResponse:
     return HttpResponse(content, content_type="text/plain; charset=utf-8")
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def ads_txt_view(request) -> HttpResponse:
     """Serve ads.txt (GET /ads.txt).
 
@@ -275,7 +275,7 @@ def ads_txt_view(request) -> HttpResponse:
     return HttpResponse(content, content_type="text/plain")
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def app_ads_txt_view(request) -> HttpResponse:
     """Serve app-ads.txt (GET /app-ads.txt).
 
@@ -300,7 +300,7 @@ def app_ads_txt_view(request) -> HttpResponse:
     return HttpResponse(content, content_type="text/plain")
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def security_txt_view(request) -> HttpResponse:
     """Serve /.well-known/security.txt.
 
@@ -340,7 +340,7 @@ def security_txt_root_view(request) -> HttpResponsePermanentRedirect:
     return HttpResponsePermanentRedirect(canonical_url)
 
 
-@require_GET
+@require_http_methods(["GET", "HEAD"])
 def humans_txt_view(request) -> HttpResponse:
     """Serve humans.txt (GET /humans.txt).
 
