@@ -45,6 +45,13 @@ but **fully standalone** — no other ICV packages required.
 - **ads.txt / app-ads.txt** — IAB-format authorised seller declarations
 - **security.txt** — RFC 9116 compliant, served at `/.well-known/security.txt`
 - **humans.txt** — team credits
+- **URL redirects** — database-driven redirect rules (301/302/307/308/410) with
+  exact, prefix, and regex matching, priority ordering, expiry, hit tracking,
+  and CSV import/export
+- **404 tracking** — automatic detection of recurring 404s with hit counts and
+  referrer tracking; create redirect rules directly from admin
+- **RedirectMiddleware** — opt-in middleware evaluates redirect rules before
+  Django's URL resolver; fail-open design never breaks the request cycle
 - **Search engine ping** — Google, Bing, Yandex notified on content changes
   (conditional on checksum comparison)
 - **Multi-tenancy** — all discovery files are tenant-scoped; sitemap paths
@@ -52,12 +59,13 @@ but **fully standalone** — no other ICV packages required.
   prevent path-traversal attacks
 - **Gzip support** — compressed `.xml.gz` output with correct headers
 - **Atomic writes** — temp file then rename; no partially-written files served
-- **5 management commands** — `setup`, `generate`, `ping`, `validate`, `stats`
-- **Django admin** — all 6 models registered with actions, list filters, and
+- **6 management commands** — `setup`, `generate`, `ping`, `validate`, `stats`,
+  `redirects`
+- **Django admin** — all 8 models registered with actions, list filters, and
   read-only views
 - **Celery graceful degradation** — tasks work synchronously when Celery is not
   installed
-- **Testing utilities** — 6 factory-boy factories, pytest fixtures, and helpers
+- **Testing utilities** — 8 factory-boy factories, pytest fixtures, and helpers
   in `icv_sitemaps.testing`
 
 ---
@@ -324,6 +332,90 @@ Site: example.com
 
 ---
 
+## URL Redirects & 404 Tracking
+
+### Redirect Rules
+
+Database-driven redirect rules evaluated by `RedirectMiddleware` before
+Django's URL resolver:
+
+```python
+from icv_sitemaps.services import add_redirect
+
+# Permanent redirect
+add_redirect("/old-page/", "/new-page/", 301)
+
+# Temporary redirect
+add_redirect("/promo/", "/summer-sale/", 302)
+
+# 410 Gone — page permanently removed
+add_redirect("/deleted-product/", "", 410)
+
+# Prefix match — all paths under /blog/2023/ redirect
+add_redirect("/blog/2023/", "/archive/2023/", 301, match_type="prefix")
+
+# Regex match
+add_redirect(r"/product/\d+/", "/products/", 301, match_type="regex")
+
+# Bulk import from CSV
+from icv_sitemaps.services import bulk_import_redirects
+
+with open("redirects.csv") as f:
+    import csv
+    rows = list(csv.DictReader(f))
+    result = bulk_import_redirects(rows)
+    # {"created": 150, "updated": 3, "errors": []}
+```
+
+### Enable the Middleware
+
+```python
+# settings.py
+MIDDLEWARE = [
+    # ... security/WAF middleware first ...
+    "icv_sitemaps.middleware.RedirectMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    # ...
+]
+
+ICV_SITEMAPS_REDIRECT_ENABLED = True
+```
+
+### 404 Tracking
+
+Enable automatic 404 tracking to identify broken URLs:
+
+```python
+# settings.py
+ICV_SITEMAPS_404_TRACKING_ENABLED = True
+ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE = 1.0   # Track all 404s (reduce for high traffic)
+ICV_SITEMAPS_404_IGNORE_PATTERNS = [
+    r"\.(?:css|js|ico|png|jpg|jpeg|gif|svg|woff2?|ttf|eot|map)$",
+]
+```
+
+Review top 404s and create redirects:
+
+```python
+from icv_sitemaps.services import get_top_404s
+
+# Top 50 unresolved 404s with at least 5 hits
+for entry in get_top_404s(min_hits=5):
+    print(f"{entry.path} — {entry.hit_count} hits, referrers: {entry.referrers}")
+```
+
+Or from the command line:
+
+```bash
+python manage.py icv_sitemaps_redirects --top-404s
+python manage.py icv_sitemaps_redirects --list
+python manage.py icv_sitemaps_redirects --import redirects.csv
+python manage.py icv_sitemaps_redirects --export redirects.csv
+python manage.py icv_sitemaps_redirects --prune   # Remove expired rules
+```
+
+---
+
 ## Configuration
 
 ### Settings Reference
@@ -350,6 +442,11 @@ sensible default so the package works out of the box for local development.
 | `ICV_SITEMAPS_ASYNC_GENERATION` | `bool` | `True` | Use Celery for background generation |
 | `ICV_SITEMAPS_STREAMING_THRESHOLD` | `int` | `100000` | URL count above which streaming generation is used |
 | `ICV_SITEMAPS_NEWS_MAX_AGE_DAYS` | `int` | `2` | Maximum age for news entries (Google requires < 2 days) |
+| `ICV_SITEMAPS_REDIRECT_ENABLED` | `bool` | `False` | Enable redirect middleware evaluation (opt-in) |
+| `ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT` | `int` | `300` | Cache TTL for redirect rule lookups (seconds) |
+| `ICV_SITEMAPS_404_TRACKING_ENABLED` | `bool` | `False` | Enable 404 tracking in the redirect middleware |
+| `ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE` | `float` | `1.0` | Fraction of 404s to track (0.0--1.0) |
+| `ICV_SITEMAPS_404_IGNORE_PATTERNS` | `list` | `[r"\.(?:css\|js\|...)$"]` | Regex patterns for paths to ignore when tracking 404s |
 
 ### Auto-Sections Configuration
 
@@ -394,6 +491,12 @@ from icv_sitemaps.services import (
     # Discovery files
     get_discovery_file_content,
     set_discovery_file_content,
+    # Redirects
+    check_redirect,
+    add_redirect,
+    bulk_import_redirects,
+    record_404,
+    get_top_404s,
 )
 ```
 
@@ -408,6 +511,7 @@ from icv_sitemaps.services import (
 | `icv_sitemaps_ping [--url URL] [--tenant ID]` | Ping search engines |
 | `icv_sitemaps_validate [--section NAME]` | Validate generated sitemaps against protocol |
 | `icv_sitemaps_stats [--tenant ID]` | Show generation statistics |
+| `icv_sitemaps_redirects [--list] [--import FILE] [--export FILE] [--prune] [--top-404s]` | Manage redirect rules |
 
 ---
 
@@ -422,6 +526,9 @@ All signals are defined in `icv_sitemaps.signals`:
 | `sitemap_section_deleted` | After a section and its files are deleted |
 | `sitemap_pinged` | After search engines are pinged |
 | `sitemap_section_stale` | After a section is marked stale |
+| `redirect_rule_saved` | After a redirect rule is saved |
+| `redirect_rule_deleted` | After a redirect rule is deleted |
+| `redirect_matched` | When a redirect rule matches a request |
 
 ---
 
@@ -434,6 +541,8 @@ All signals are defined in `icv_sitemaps.signals`:
 | `ping_engines_task` | Ping search engines | After generation |
 | `cleanup_generation_logs` | Delete old logs (30-day default) | Daily at 04:00 |
 | `cleanup_orphan_files` | Remove unreferenced storage files | Weekly |
+| `cleanup_expired_redirects` | Delete expired redirect rules | Daily |
+| `cleanup_redirect_logs` | Delete old resolved 404 logs (90-day default) | Weekly |
 
 ---
 
@@ -484,6 +593,8 @@ from icv_sitemaps.testing import (
     RobotsRuleFactory,
     AdsEntryFactory,
     DiscoveryFileConfigFactory,
+    RedirectRuleFactory,
+    RedirectLogFactory,
 )
 ```
 
@@ -506,6 +617,8 @@ pytest tests/ -v
 | `RobotsRule` | Database-driven `robots.txt` directives |
 | `AdsEntry` | `ads.txt` / `app-ads.txt` authorised seller entries |
 | `DiscoveryFileConfig` | Content store for `llms.txt`, `security.txt`, `humans.txt` |
+| `RedirectRule` | HTTP redirect and 410 Gone rules with pattern matching |
+| `RedirectLog` | Aggregated 404 tracking with hit counts and referrers |
 
 ---
 

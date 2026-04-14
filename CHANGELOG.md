@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-14
+
+### Fixed
+
+- `RedirectRuleAdmin` — added `list_display_links` to fix Django admin check
+  error when `priority` is both first in `list_display` and in `list_editable`
+- Ruff format and lint compliance for all new files
+
 ## [0.4.0] - 2026-04-14
 
 ### Added
