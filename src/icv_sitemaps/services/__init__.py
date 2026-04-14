@@ -20,6 +20,13 @@ from icv_sitemaps.services.generation import (
     mark_section_stale,
 )
 from icv_sitemaps.services.ping import ping_search_engines
+from icv_sitemaps.services.redirects import (
+    add_redirect,
+    bulk_import_redirects,
+    check_redirect,
+    get_top_404s,
+    record_404,
+)
 from icv_sitemaps.services.robots import (
     add_robots_rule,
     get_robots_rules,
@@ -52,4 +59,10 @@ __all__ = [
     # Discovery files
     "get_discovery_file_content",
     "set_discovery_file_content",
+    # Redirects
+    "check_redirect",
+    "add_redirect",
+    "bulk_import_redirects",
+    "record_404",
+    "get_top_404s",
 ]

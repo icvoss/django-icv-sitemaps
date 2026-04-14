@@ -3,6 +3,8 @@
 from django.contrib.admin.sites import AdminSite
 
 from icv_sitemaps.admin import (
+    RedirectLogAdmin,
+    RedirectRuleAdmin,
     AdsEntryAdmin,
     DiscoveryFileConfigAdmin,
     RobotsRuleAdmin,
@@ -13,6 +15,8 @@ from icv_sitemaps.admin import (
 from icv_sitemaps.models import (
     AdsEntry,
     DiscoveryFileConfig,
+    RedirectLog,
+    RedirectRule,
     RobotsRule,
     SitemapFile,
     SitemapGenerationLog,
@@ -139,3 +143,44 @@ class TestDiscoveryFileConfigAdmin:
     def test_list_display_contains_key_fields(self):
         assert "file_type" in self.admin.list_display
         assert "is_active" in self.admin.list_display
+
+
+class TestRedirectRuleAdmin:
+    def setup_method(self):
+        self.site = AdminSite()
+        self.admin = RedirectRuleAdmin(RedirectRule, self.site)
+
+    def test_list_display_contains_key_fields(self):
+        assert "source_pattern" in self.admin.list_display
+        assert "destination" in self.admin.list_display
+        assert "status_code" in self.admin.list_display
+        assert "hit_count" in self.admin.list_display
+        assert "is_active" in self.admin.list_display
+
+    def test_registered(self):
+        from django.contrib import admin
+
+        assert admin.site.is_registered(RedirectRule)
+
+
+class TestRedirectLogAdmin:
+    def setup_method(self):
+        self.site = AdminSite()
+        self.admin = RedirectLogAdmin(RedirectLog, self.site)
+
+    def test_list_display_contains_key_fields(self):
+        assert "path" in self.admin.list_display
+        assert "hit_count" in self.admin.list_display
+        assert "resolved" in self.admin.list_display
+
+    def test_read_only(self):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get("/admin/")
+        assert self.admin.has_add_permission(request) is False
+        assert self.admin.has_change_permission(request) is False
+
+    def test_registered(self):
+        from django.contrib import admin
+
+        assert admin.site.is_registered(RedirectLog)

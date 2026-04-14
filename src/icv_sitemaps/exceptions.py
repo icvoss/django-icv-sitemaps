@@ -15,3 +15,7 @@ class StorageError(IcvSitemapsError):
 
 class PingError(IcvSitemapsError):
     """Raised when search engine ping fails."""
+
+
+class RedirectError(IcvSitemapsError):
+    """Raised when redirect operations fail."""

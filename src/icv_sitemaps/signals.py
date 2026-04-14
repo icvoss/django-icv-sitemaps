@@ -21,3 +21,15 @@ sitemap_pinged = Signal()
 # Fired after a section is marked stale
 # Provides: instance
 sitemap_section_stale = Signal()
+
+# Fired after a redirect rule is saved (created or updated)
+# Provides: instance
+redirect_rule_saved = Signal()
+
+# Fired after a redirect rule is deleted
+# Provides: instance
+redirect_rule_deleted = Signal()
+
+# Fired when a redirect rule matches a request
+# Provides: rule, path, status_code
+redirect_matched = Signal()

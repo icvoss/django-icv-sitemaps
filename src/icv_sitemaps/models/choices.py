@@ -50,6 +50,27 @@ GENERATION_STATUS_CHOICES = [
     ("failed", "Failed"),
 ]
 
+REDIRECT_MATCH_TYPE_CHOICES = [
+    ("exact", "Exact"),
+    ("prefix", "Prefix"),
+    ("regex", "Regex"),
+]
+
+REDIRECT_STATUS_CODE_CHOICES = [
+    (301, "301 Moved Permanently"),
+    (302, "302 Found"),
+    (307, "307 Temporary Redirect"),
+    (308, "308 Permanent Redirect"),
+    (410, "410 Gone"),
+]
+
+REDIRECT_SOURCE_CHOICES = [
+    ("admin", "Admin"),
+    ("auto", "Auto"),
+    ("signal", "Signal"),
+    ("import", "Import"),
+]
+
 __all__ = [
     "SITEMAP_TYPE_CHOICES",
     "CHANGEFREQ_CHOICES",
@@ -58,4 +79,7 @@ __all__ = [
     "FILE_TYPE_CHOICES",
     "GENERATION_ACTION_CHOICES",
     "GENERATION_STATUS_CHOICES",
+    "REDIRECT_MATCH_TYPE_CHOICES",
+    "REDIRECT_STATUS_CODE_CHOICES",
+    "REDIRECT_SOURCE_CHOICES",
 ]

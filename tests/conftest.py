@@ -62,3 +62,19 @@ def discovery_file_config(db):
     from icv_sitemaps.testing.factories import DiscoveryFileConfigFactory
 
     return DiscoveryFileConfigFactory()
+
+
+@pytest.fixture
+def redirect_rule(db):
+    """A saved RedirectRule instance."""
+    from icv_sitemaps.testing.factories import RedirectRuleFactory
+
+    return RedirectRuleFactory()
+
+
+@pytest.fixture
+def redirect_log(db):
+    """A saved RedirectLog instance."""
+    from icv_sitemaps.testing.factories import RedirectLogFactory
+
+    return RedirectLogFactory()

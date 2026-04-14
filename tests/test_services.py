@@ -608,3 +608,175 @@ class TestPingSearchEngines:
 
         assert "google" in results
         assert "bing" in results
+
+
+# ---------------------------------------------------------------------------
+# check_redirect / add_redirect
+# ---------------------------------------------------------------------------
+
+
+class TestCheckRedirect:
+    def test_exact_match(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/old/", "/new/", 301)
+        result = check_redirect("/old/")
+        assert result is not None
+        assert result["destination"] == "/new/"
+        assert result["status_code"] == 301
+
+    def test_no_match_returns_none(self, db):
+        from icv_sitemaps.services.redirects import check_redirect
+
+        result = check_redirect("/nonexistent/")
+        assert result is None
+
+    def test_prefix_match(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/blog/", "/articles/", 301, match_type="prefix")
+        result = check_redirect("/blog/post-1/")
+        assert result is not None
+
+    def test_regex_match(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect(r"/product/\d+/", "/products/", 301, match_type="regex")
+        result = check_redirect("/product/123/")
+        assert result is not None
+
+    def test_priority_ordering(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/path/", "/low-priority/", 301, priority=10)
+        add_redirect("/path/", "/high-priority/", 302, priority=1, match_type="prefix")
+        result = check_redirect("/path/")
+        assert result["destination"] == "/high-priority/"
+
+    def test_inactive_excluded(self, db):
+        from icv_sitemaps.services.redirects import check_redirect
+
+        from icv_sitemaps.testing.factories import RedirectRuleFactory
+
+        RedirectRuleFactory(source_pattern="/inactive/", is_active=False)
+        result = check_redirect("/inactive/")
+        assert result is None
+
+    def test_tenant_scoping(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/path/", "/tenant-a/", 301, tenant_id="a")
+        assert check_redirect("/path/", tenant_id="a") is not None
+        assert check_redirect("/path/", tenant_id="b") is None
+
+
+class TestAddRedirect:
+    def test_creates_rule(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        rule = add_redirect("/old/", "/new/", 301)
+        assert rule.pk is not None
+        assert rule.source_pattern == "/old/"
+        assert rule.destination == "/new/"
+
+    def test_invalid_status_code_raises(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        with pytest.raises(ValueError, match="status_code"):
+            add_redirect("/a/", "/b/", 999)
+
+    def test_invalid_match_type_raises(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        with pytest.raises(ValueError, match="match_type"):
+            add_redirect("/a/", "/b/", 301, match_type="glob")
+
+    def test_empty_destination_for_non_410_raises(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        with pytest.raises(ValueError, match="destination is required"):
+            add_redirect("/a/", "", 301)
+
+    def test_410_clears_destination(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        rule = add_redirect("/gone/", "ignored", 410)
+        assert rule.destination == ""
+
+    def test_auto_generates_name(self, db):
+        from icv_sitemaps.services.redirects import add_redirect
+
+        rule = add_redirect("/old/", "/new/")
+        assert rule.name != ""
+
+
+class TestBulkImportRedirects:
+    def test_creates_and_updates(self, db):
+        from icv_sitemaps.services.redirects import bulk_import_redirects
+
+        rows = [
+            {"source_pattern": "/a/", "destination": "/b/"},
+            {"source_pattern": "/c/", "destination": "/d/", "status_code": "302"},
+        ]
+        result = bulk_import_redirects(rows)
+        assert result["created"] == 2
+        assert result["updated"] == 0
+
+        # Re-import with updated destination.
+        rows[0]["destination"] = "/updated/"
+        result = bulk_import_redirects(rows)
+        assert result["updated"] == 2
+
+    def test_error_handling(self, db):
+        from icv_sitemaps.services.redirects import bulk_import_redirects
+
+        rows = [{"not_a_field": "value"}]
+        result = bulk_import_redirects(rows)
+        assert len(result["errors"]) == 1
+
+
+class TestRecord404:
+    def test_creates_entry(self, db):
+        from icv_sitemaps.services.redirects import record_404
+
+        log = record_404("/missing/")
+        assert log.path == "/missing/"
+        assert log.hit_count == 1
+
+    def test_increments_hit_count(self, db):
+        from icv_sitemaps.services.redirects import record_404
+
+        record_404("/missing/")
+        log = record_404("/missing/")
+        assert log.hit_count == 2
+
+    def test_tracks_referrers(self, db):
+        from icv_sitemaps.services.redirects import record_404
+
+        record_404("/missing/", referrer="https://google.com")
+        log = record_404("/missing/", referrer="https://google.com")
+        assert log.referrers.get("https://google.com", 0) >= 1
+
+
+class TestGetTop404s:
+    def test_returns_unresolved_ordered(self, db):
+        from icv_sitemaps.models.redirects import RedirectLog
+        from icv_sitemaps.services.redirects import get_top_404s
+
+        RedirectLog.objects.create(path="/low/", hit_count=5)
+        RedirectLog.objects.create(path="/high/", hit_count=100)
+        RedirectLog.objects.create(path="/resolved/", hit_count=200, resolved=True)
+
+        results = list(get_top_404s(min_hits=1))
+        assert len(results) == 2
+        assert results[0].path == "/high/"
+
+    def test_respects_min_hits(self, db):
+        from icv_sitemaps.models.redirects import RedirectLog
+        from icv_sitemaps.services.redirects import get_top_404s
+
+        RedirectLog.objects.create(path="/rare/", hit_count=1)
+        RedirectLog.objects.create(path="/common/", hit_count=10)
+
+        results = list(get_top_404s(min_hits=5))
+        assert len(results) == 1

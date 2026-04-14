@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-14
+
+### Added
+
+- **Redirect and 410 management** — database-driven URL redirects with
+  `RedirectRule` model supporting exact, prefix, and regex matching, priority
+  ordering, expiry, hit tracking, and multi-tenant scoping
+- **404 tracking** — `RedirectLog` model aggregates recurring 404 paths with
+  hit counts and top referrers for redirect intelligence
+- **RedirectMiddleware** — opt-in middleware (`ICV_SITEMAPS_REDIRECT_ENABLED`)
+  evaluates redirect rules before URL resolution, serves 301/302/307/308/410
+  responses, and tracks 404s with configurable sampling and ignore patterns
+- Redirect rule cache with signal-based invalidation (5-minute TTL)
+- `add_redirect()`, `check_redirect()`, `bulk_import_redirects()`,
+  `record_404()`, `get_top_404s()` service functions
+- `redirect_rule_saved`, `redirect_rule_deleted`, `redirect_matched` signals
+  for cross-package integration (e.g. WAF, taxonomy move tracking)
+- `RedirectRuleAdmin` with priority, hit count, and status filtering;
+  `RedirectLogAdmin` (read-only) with "Create 410 Gone" admin action
+- `icv_sitemaps_redirects` management command — list, import/export CSV,
+  prune expired rules, show top 404s
+- `cleanup_expired_redirects` and `cleanup_redirect_logs` Celery tasks
+- `RedirectRuleFactory` and `RedirectLogFactory` test factories
+- 5 new settings: `ICV_SITEMAPS_REDIRECT_ENABLED`,
+  `ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT`, `ICV_SITEMAPS_404_TRACKING_ENABLED`,
+  `ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE`, `ICV_SITEMAPS_404_IGNORE_PATTERNS`
+- Migration `0004` generated on Django 5.2
+- 49 new tests (263 total)
+
 ## [0.3.0] - 2026-04-14
 
 ### Added

@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 
 from icv_sitemaps.models.discovery import AdsEntry, DiscoveryFileConfig, RobotsRule
+from icv_sitemaps.models.redirects import RedirectLog, RedirectRule
 from icv_sitemaps.models.sections import (
     SitemapFile,
     SitemapGenerationLog,
@@ -259,3 +260,83 @@ class DiscoveryFileConfigAdmin(admin.ModelAdmin):
     readonly_fields = ["created_at", "updated_at"]
     search_fields = ["tenant_id"]
     ordering = ["tenant_id", "file_type"]
+
+
+# ---------------------------------------------------------------------------
+# RedirectRule
+# ---------------------------------------------------------------------------
+
+
+@admin.register(RedirectRule)
+class RedirectRuleAdmin(admin.ModelAdmin):
+    list_display = [
+        "priority",
+        "source_pattern",
+        "destination",
+        "status_code",
+        "match_type",
+        "hit_count",
+        "is_active",
+    ]
+    list_filter = ["status_code", "match_type", "is_active", "source"]
+    list_editable = ["is_active", "priority"]
+    search_fields = ["source_pattern", "destination", "name", "notes"]
+    readonly_fields = ["hit_count", "last_hit_at", "created_at", "updated_at"]
+    ordering = ["tenant_id", "priority"]
+
+
+# ---------------------------------------------------------------------------
+# RedirectLog (read-only)
+# ---------------------------------------------------------------------------
+
+
+@admin.action(description=_("Create 410 Gone rule from selected 404s"))
+def create_gone_from_404(modeladmin, request, queryset):
+    """Create a 410 Gone redirect rule for each selected 404 log entry."""
+    from icv_sitemaps.services.redirects import add_redirect
+
+    count = 0
+    for log_entry in queryset.filter(resolved=False):
+        try:
+            add_redirect(
+                log_entry.path,
+                "",
+                410,
+                tenant_id=log_entry.tenant_id,
+                source="auto",
+                name=f"410 from 404 log: {log_entry.path}",
+            )
+            log_entry.resolved = True
+            log_entry.save(update_fields=["resolved"])
+            count += 1
+        except Exception:
+            pass
+    modeladmin.message_user(
+        request,
+        _("%(count)d 410 Gone rule(s) created.") % {"count": count},
+    )
+
+
+@admin.register(RedirectLog)
+class RedirectLogAdmin(admin.ModelAdmin):
+    list_display = ["path", "hit_count", "first_seen_at", "last_seen_at", "resolved", "tenant_id"]
+    list_filter = ["resolved"]
+    ordering = ["-hit_count"]
+    readonly_fields = [
+        "path",
+        "tenant_id",
+        "hit_count",
+        "first_seen_at",
+        "last_seen_at",
+        "referrers",
+        "resolved",
+        "created_at",
+        "updated_at",
+    ]
+    actions = [create_gone_from_404]
+
+    def has_add_permission(self, request) -> bool:
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        return False

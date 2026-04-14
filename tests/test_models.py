@@ -149,3 +149,126 @@ class TestDiscoveryFileConfig:
         DiscoveryFileConfig.objects.create(file_type="humans_txt", tenant_id="tenant-a", content="team a")
         DiscoveryFileConfig.objects.create(file_type="humans_txt", tenant_id="tenant-b", content="team b")
         assert DiscoveryFileConfig.objects.count() == 2
+
+
+class TestRedirectRule:
+    def test_create_rule(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        rule = RedirectRule.objects.create(
+            name="test redirect",
+            source_pattern="/old/",
+            destination="/new/",
+            status_code=301,
+        )
+        assert rule.pk is not None
+        assert str(rule) == "/old/ \u2192 /new/ (301)"
+
+    def test_410_str(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        rule = RedirectRule.objects.create(
+            name="gone page",
+            source_pattern="/removed/",
+            destination="",
+            status_code=410,
+        )
+        assert "410 Gone" in str(rule)
+
+    def test_default_values(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        rule = RedirectRule.objects.create(
+            name="defaults",
+            source_pattern="/test/",
+            destination="/dest/",
+        )
+        assert rule.match_type == "exact"
+        assert rule.status_code == 301
+        assert rule.preserve_query_string is True
+        assert rule.is_active is True
+        assert rule.priority == 0
+        assert rule.hit_count == 0
+        assert rule.source == "admin"
+
+    def test_active_manager_excludes_inactive(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRule.objects.create(name="active", source_pattern="/a/", destination="/b/", is_active=True)
+        RedirectRule.objects.create(name="inactive", source_pattern="/c/", destination="/d/", is_active=False)
+        assert RedirectRule.objects.active().count() == 1
+
+    def test_active_manager_excludes_expired(self, db):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRule.objects.create(
+            name="expired",
+            source_pattern="/exp/",
+            destination="/new/",
+            expires_at=timezone.now() - timedelta(hours=1),
+        )
+        assert RedirectRule.objects.active().count() == 0
+
+    def test_ordering_by_priority(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRule.objects.create(name="low", source_pattern="/low/", destination="/a/", priority=10)
+        RedirectRule.objects.create(name="high", source_pattern="/high/", destination="/b/", priority=1)
+        rules = list(RedirectRule.objects.all())
+        assert rules[0].priority < rules[1].priority
+
+    def test_exact_uniqueness_constraint(self, db):
+        from django.db import IntegrityError
+
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRule.objects.create(
+            name="first", source_pattern="/dup/", destination="/a/", match_type="exact"
+        )
+        with pytest.raises(IntegrityError):
+            RedirectRule.objects.create(
+                name="second", source_pattern="/dup/", destination="/b/", match_type="exact"
+            )
+
+    def test_prefix_allows_duplicates(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRule.objects.create(
+            name="first", source_pattern="/prefix/", destination="/a/", match_type="prefix"
+        )
+        RedirectRule.objects.create(
+            name="second", source_pattern="/prefix/", destination="/b/", match_type="prefix"
+        )
+        assert RedirectRule.objects.count() == 2
+
+
+class TestRedirectLog:
+    def test_create_log(self, db):
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        log = RedirectLog.objects.create(path="/missing/")
+        assert log.pk is not None
+        assert str(log) == "/missing/ (1 hits)"
+        assert log.hit_count == 1
+        assert log.resolved is False
+
+    def test_unique_path_tenant(self, db):
+        from django.db import IntegrityError
+
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        RedirectLog.objects.create(path="/dup/")
+        with pytest.raises(IntegrityError):
+            RedirectLog.objects.create(path="/dup/")
+
+    def test_ordering_by_hit_count(self, db):
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        RedirectLog.objects.create(path="/low/", hit_count=5)
+        RedirectLog.objects.create(path="/high/", hit_count=100)
+        logs = list(RedirectLog.objects.all())
+        assert logs[0].hit_count > logs[1].hit_count

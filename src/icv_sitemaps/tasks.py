@@ -223,3 +223,58 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
         tenant_id,
     )
     return deleted_count
+
+
+# ---------------------------------------------------------------------------
+# Redirect tasks
+# ---------------------------------------------------------------------------
+
+
+@shared_task
+def cleanup_expired_redirects() -> int:
+    """Delete expired redirect rules.
+
+    Intended as a daily Celery beat task.
+
+    Returns:
+        Number of records deleted.
+    """
+    from django.utils import timezone
+
+    from icv_sitemaps.models.redirects import RedirectRule
+
+    deleted, _ = RedirectRule.objects.filter(
+        expires_at__isnull=False,
+        expires_at__lt=timezone.now(),
+    ).delete()
+    logger.info("cleanup_expired_redirects: deleted %d expired rule(s).", deleted)
+    return deleted
+
+
+@shared_task
+def cleanup_redirect_logs(days_older_than: int = 90) -> int:
+    """Delete resolved ``RedirectLog`` entries older than *days_older_than* days.
+
+    Intended as a weekly Celery beat task.
+
+    Args:
+        days_older_than: Retention period in days.  Defaults to 90.
+
+    Returns:
+        Number of records deleted.
+    """
+    from django.utils import timezone
+
+    from icv_sitemaps.models.redirects import RedirectLog
+
+    cutoff = timezone.now() - timezone.timedelta(days=days_older_than)
+    deleted, _ = RedirectLog.objects.filter(
+        resolved=True,
+        last_seen_at__lt=cutoff,
+    ).delete()
+    logger.info(
+        "cleanup_redirect_logs: deleted %d resolved log(s) older than %d days.",
+        deleted,
+        days_older_than,
+    )
+    return deleted

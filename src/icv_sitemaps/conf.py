@@ -57,3 +57,26 @@ ICV_SITEMAPS_ASYNC_GENERATION: bool = getattr(settings, "ICV_SITEMAPS_ASYNC_GENE
 
 # Maximum age for news sitemap entries (Google requires < 2 days)
 ICV_SITEMAPS_NEWS_MAX_AGE_DAYS: int = getattr(settings, "ICV_SITEMAPS_NEWS_MAX_AGE_DAYS", 2)
+
+# ---------------------------------------------------------------------------
+# Redirect settings
+# ---------------------------------------------------------------------------
+
+# Enable redirect middleware evaluation (opt-in)
+ICV_SITEMAPS_REDIRECT_ENABLED: bool = getattr(settings, "ICV_SITEMAPS_REDIRECT_ENABLED", False)
+
+# Cache TTL in seconds for redirect rule lookups
+ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT: int = getattr(settings, "ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT", 300)
+
+# Enable 404 tracking in the redirect middleware
+ICV_SITEMAPS_404_TRACKING_ENABLED: bool = getattr(settings, "ICV_SITEMAPS_404_TRACKING_ENABLED", False)
+
+# Fraction of 404s to track (0.0–1.0). Lower values reduce DB writes under load.
+ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE: float = getattr(settings, "ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE", 1.0)
+
+# Regex patterns for paths to ignore when tracking 404s (static assets, etc.)
+ICV_SITEMAPS_404_IGNORE_PATTERNS: list = getattr(
+    settings,
+    "ICV_SITEMAPS_404_IGNORE_PATTERNS",
+    [r"\.(?:css|js|ico|png|jpg|jpeg|gif|svg|woff2?|ttf|eot|map)$"],
+)

@@ -10,6 +10,8 @@ import pytest
 from icv_sitemaps.testing.factories import (
     AdsEntryFactory,
     DiscoveryFileConfigFactory,
+    RedirectLogFactory,
+    RedirectRuleFactory,
     RobotsRuleFactory,
     SitemapFileFactory,
     SitemapGenerationLogFactory,
@@ -51,3 +53,15 @@ def ads_entry(db):
 def discovery_file_config(db):
     """A saved DiscoveryFileConfig instance."""
     return DiscoveryFileConfigFactory()
+
+
+@pytest.fixture
+def redirect_rule(db):
+    """A saved RedirectRule instance."""
+    return RedirectRuleFactory()
+
+
+@pytest.fixture
+def redirect_log(db):
+    """A saved RedirectLog instance."""
+    return RedirectLogFactory()

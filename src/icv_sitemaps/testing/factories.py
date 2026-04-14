@@ -100,3 +100,35 @@ class DiscoveryFileConfigFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = "icv_sitemaps.DiscoveryFileConfig"
         django_get_or_create = ("file_type", "tenant_id")
+
+
+class RedirectRuleFactory(factory.django.DjangoModelFactory):
+    """Factory for RedirectRule."""
+
+    name = factory.Sequence(lambda n: f"redirect-{n}")
+    tenant_id = ""
+    match_type = "exact"
+    source_pattern = factory.Sequence(lambda n: f"/old-path-{n}/")
+    destination = factory.Sequence(lambda n: f"/new-path-{n}/")
+    status_code = 301
+    preserve_query_string = True
+    is_active = True
+    priority = factory.Sequence(lambda n: n)
+    source = "admin"
+    notes = ""
+
+    class Meta:
+        model = "icv_sitemaps.RedirectRule"
+
+
+class RedirectLogFactory(factory.django.DjangoModelFactory):
+    """Factory for RedirectLog."""
+
+    path = factory.Sequence(lambda n: f"/missing-{n}/")
+    tenant_id = ""
+    hit_count = 1
+    referrers = factory.LazyFunction(dict)
+    resolved = False
+
+    class Meta:
+        model = "icv_sitemaps.RedirectLog"

@@ -17,4 +17,6 @@ __all__ = [
     "RobotsRuleFactory",
     "AdsEntryFactory",
     "DiscoveryFileConfigFactory",
+    "RedirectRuleFactory",
+    "RedirectLogFactory",
 ]
