@@ -116,11 +116,13 @@ def add_robots_rule(
     from icv_sitemaps.models.discovery import RobotsRule
 
     directive_lower = directive.lower()
-    if directive_lower not in ("allow", "disallow"):
-        raise ValueError(f"directive must be 'allow' or 'disallow', got: {directive!r}")
+    valid_directives = {"allow", "disallow", "crawl-delay", "sitemap", "host"}
+    if directive_lower not in valid_directives:
+        raise ValueError(f"directive must be one of {sorted(valid_directives)}, got: {directive!r}")
 
-    if not path.startswith("/"):
-        raise ValueError(f"path must start with '/', got: {path!r}")
+    path_directives = {"allow", "disallow"}
+    if directive_lower in path_directives and not path.startswith("/"):
+        raise ValueError(f"path must start with '/' for {directive_lower}, got: {path!r}")
 
     for field_name, value in [("user_agent", user_agent), ("path", path), ("comment", comment)]:
         if "\n" in value or "\r" in value:

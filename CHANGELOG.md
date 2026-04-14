@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-14
+
+### Added
+
+- `Crawl-delay`, `Sitemap`, and `Host` directive choices for `RobotsRule` —
+  these directives can now be stored in the database instead of requiring the
+  `ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES` config fallback
+- `add_robots_rule()` service accepts all valid robots.txt directives; path
+  validation only enforced for `allow`/`disallow`
+
+### Changed
+
+- `RobotsRule.directive` field widened from `max_length=10` to `max_length=20`
+  to accommodate `Crawl-delay` (11 chars) with headroom
+- Migration `0003_alter_robotsrule_directive` generated on Django 5.2
+
+### Fixed
+
+- **Sitemap generation drops connection on large querysets** — replaced single
+  `queryset.iterator()` with keyset pagination (`pk__gt` batching) and
+  `close_old_connections()` between chunks. The old approach held a single
+  server-side cursor across millions of rows, which managed Postgres providers
+  (e.g. DigitalOcean) kill via SSL/idle timeouts. Each batch now issues a
+  fresh short-lived query.
+
 ## [0.2.3] - 2026-03-25
 
 ### Fixed

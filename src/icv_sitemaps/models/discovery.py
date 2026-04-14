@@ -33,9 +33,9 @@ class RobotsRule(BaseModel):
         help_text=_('User agent string, e.g. "*", "Googlebot", or "GPTBot".'),
     )
     directive = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=DIRECTIVE_CHOICES,
-        help_text=_("Whether to allow or disallow the specified path."),
+        help_text=_("Robots.txt directive, e.g. Allow, Disallow, or Crawl-delay."),
     )
     path = models.CharField(
         max_length=500,

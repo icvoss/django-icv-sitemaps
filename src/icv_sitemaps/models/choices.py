@@ -20,6 +20,9 @@ CHANGEFREQ_CHOICES = [
 DIRECTIVE_CHOICES = [
     ("allow", "Allow"),
     ("disallow", "Disallow"),
+    ("crawl-delay", "Crawl-delay"),
+    ("sitemap", "Sitemap"),
+    ("host", "Host"),
 ]
 
 RELATIONSHIP_CHOICES = [

@@ -497,34 +497,50 @@ def generate_section(
         )
         total_urls += len(entries)
 
-    for instance in queryset.iterator(chunk_size=ICV_SITEMAPS_BATCH_SIZE):
-        # Skip news entries older than cutoff (BR-015).
-        if section.sitemap_type == "news":
-            news_date_field = getattr(model_class, "sitemap_news_date_field", "")
-            if news_date_field:
-                pub_date = getattr(instance, news_date_field, None)
-                if pub_date is not None and pub_date < cutoff:
-                    continue
+    # Keyset pagination: issue a fresh query per batch to avoid long-running
+    # cursors that get killed by managed Postgres SSL/idle timeouts (BR-GEN-001).
+    from django.db import close_old_connections
 
-        entry = _extract_entry(instance, sitemap_type, base_url_setting)
-        if entry is None:
-            continue
+    last_pk = None
+    while True:
+        chunk_qs = queryset.order_by("pk")
+        if last_pk is not None:
+            chunk_qs = chunk_qs.filter(pk__gt=last_pk)
+        chunk = list(chunk_qs[:ICV_SITEMAPS_BATCH_SIZE])
+        if not chunk:
+            break
 
-        # Estimate entry size.
-        entry_size_estimate = len(entry.get("loc", "")) + 200
+        for instance in chunk:
+            # Skip news entries older than cutoff (BR-015).
+            if section.sitemap_type == "news":
+                news_date_field = getattr(model_class, "sitemap_news_date_field", "")
+                if news_date_field:
+                    pub_date = getattr(instance, news_date_field, None)
+                    if pub_date is not None and pub_date < cutoff:
+                        continue
 
-        # Check if adding this entry would exceed limits (BR-001, BR-002).
-        if current_entries and (
-            len(current_entries) >= ICV_SITEMAPS_MAX_URLS_PER_FILE
-            or current_size + entry_size_estimate > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES
-        ):
-            _flush_file(current_entries, file_sequence)
-            file_sequence += 1
-            current_entries = []
-            current_size = 0
+            entry = _extract_entry(instance, sitemap_type, base_url_setting)
+            if entry is None:
+                continue
 
-        current_entries.append(entry)
-        current_size += entry_size_estimate
+            # Estimate entry size.
+            entry_size_estimate = len(entry.get("loc", "")) + 200
+
+            # Check if adding this entry would exceed limits (BR-001, BR-002).
+            if current_entries and (
+                len(current_entries) >= ICV_SITEMAPS_MAX_URLS_PER_FILE
+                or current_size + entry_size_estimate > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES
+            ):
+                _flush_file(current_entries, file_sequence)
+                file_sequence += 1
+                current_entries = []
+                current_size = 0
+
+            current_entries.append(entry)
+            current_size += entry_size_estimate
+
+        last_pk = chunk[-1].pk
+        close_old_connections()
 
     # Flush the last batch.
     _flush_file(current_entries, file_sequence)
