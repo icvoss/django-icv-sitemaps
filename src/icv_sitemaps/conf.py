@@ -29,6 +29,13 @@ ICV_SITEMAPS_BATCH_SIZE: int = getattr(settings, "ICV_SITEMAPS_BATCH_SIZE", 5000
 # Compress generated sitemap files with gzip
 ICV_SITEMAPS_GZIP: bool = getattr(settings, "ICV_SITEMAPS_GZIP", True)
 
+# Use the streaming XML writer to bound per-section memory regardless of
+# entry count. When True, entries are serialised directly to a local temp
+# file at extraction time instead of accumulated in a list. When False,
+# falls back to the buffered builder (ElementTree-style accumulation).
+# The streaming writer is the default and recommended for large sections.
+ICV_SITEMAPS_STREAMING_WRITER: bool = getattr(settings, "ICV_SITEMAPS_STREAMING_WRITER", True)
+
 # Search engines to ping after regeneration.
 # Google and Bing retired their ping endpoints; default is now empty.
 ICV_SITEMAPS_PING_ENGINES: list = getattr(settings, "ICV_SITEMAPS_PING_ENGINES", [])

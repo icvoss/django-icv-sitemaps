@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-16
+
+### Performance
+
+- **Streaming XML writer** — `generate_section()` now serialises entries
+  directly to a local temp file as they are extracted, instead of
+  accumulating up to `ICV_SITEMAPS_MAX_URLS_PER_FILE` dicts in memory and
+  building an ElementTree at flush time. Per-section peak memory drops
+  from ~1.4 GB to ~50–100 MB on 50K-URL shards, and per-file generation
+  time is flat instead of degrading as the run progresses. The finalised
+  temp file is uploaded once to the configured storage backend at file
+  boundary, preserving atomic-swap semantics and working uniformly across
+  local FS and remote (S3, Spaces, GCS) backends.
+- Per-entry byte renderers replace the ElementTree-based builders,
+  removing per-row object overhead.
+
+### Added
+
+- `ICV_SITEMAPS_STREAMING_WRITER` setting (default `True`). Set to
+  `False` to fall back to the buffered code path if needed — both paths
+  produce equivalent output.
+
+### Fixed
+
+- Image and video sitemaps no longer emit duplicate `xmlns:image` /
+  `xmlns:video` declarations on the root `<urlset>` element. The
+  streaming writer hand-writes the header, avoiding ElementTree's
+  `register_namespace()` interaction that caused the duplicate attr.
+- All XML output is now explicitly escaped via `xml.sax.saxutils.escape`
+  at render time.
+
 ## [0.4.2] - 2026-04-14
 
 ### Fixed

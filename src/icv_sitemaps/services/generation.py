@@ -6,14 +6,17 @@ import gzip
 import hashlib
 import io
 import logging
+import os
 import re
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
+from xml.sax.saxutils import escape as xml_escape
 
 from django.apps import apps
-from django.core.files.base import ContentFile
+from django.core.files.base import ContentFile, File
 from django.utils import timezone as django_timezone
 from django.utils.module_loading import import_string
 
@@ -126,12 +129,292 @@ def _checksum(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _write_to_storage(storage, path: str, data: bytes, *, gzip_enabled: bool = False) -> tuple[str, int]:
-    """Write *data* atomically to *path* in *storage*.
+# ---------------------------------------------------------------------------
+# Per-entry byte renderers
+#
+# Hand-written XML serialisation, avoiding ElementTree object overhead per
+# row. Each renderer returns the bytes for a single ``<url>...</url>``
+# element (or ``<sitemap>...</sitemap>`` for the index). All user-controlled
+# strings are escaped via xml.sax.saxutils.escape.
+# ---------------------------------------------------------------------------
 
+
+def _esc(value) -> str:
+    """XML-escape *value* coerced to str."""
+    return xml_escape(str(value))
+
+
+def _render_standard_url(entry: dict) -> bytes:
+    parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
+    if entry.get("lastmod"):
+        parts.append(f"    <lastmod>{_esc(entry['lastmod'])}</lastmod>\n")
+    if entry.get("changefreq"):
+        parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
+    if entry.get("priority") is not None:
+        parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    parts.append("  </url>\n")
+    return "".join(parts).encode("utf-8")
+
+
+def _render_image_url(entry: dict) -> bytes:
+    parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
+    if entry.get("lastmod"):
+        parts.append(f"    <lastmod>{_esc(entry['lastmod'])}</lastmod>\n")
+    if entry.get("changefreq"):
+        parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
+    if entry.get("priority") is not None:
+        parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    for image in entry.get("images") or ():
+        parts.append("    <image:image>\n")
+        parts.append(f"      <image:loc>{_esc(image['loc'])}</image:loc>\n")
+        if image.get("caption"):
+            parts.append(f"      <image:caption>{_esc(image['caption'])}</image:caption>\n")
+        if image.get("title"):
+            parts.append(f"      <image:title>{_esc(image['title'])}</image:title>\n")
+        if image.get("geo_location"):
+            parts.append(f"      <image:geo_location>{_esc(image['geo_location'])}</image:geo_location>\n")
+        if image.get("license"):
+            parts.append(f"      <image:license>{_esc(image['license'])}</image:license>\n")
+        parts.append("    </image:image>\n")
+    parts.append("  </url>\n")
+    return "".join(parts).encode("utf-8")
+
+
+def _render_video_url(entry: dict) -> bytes:
+    parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
+    if entry.get("lastmod"):
+        parts.append(f"    <lastmod>{_esc(entry['lastmod'])}</lastmod>\n")
+    if entry.get("changefreq"):
+        parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
+    if entry.get("priority") is not None:
+        parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    video = entry.get("video")
+    if video:
+        parts.append("    <video:video>\n")
+        if video.get("thumbnail_loc"):
+            parts.append(f"      <video:thumbnail_loc>{_esc(video['thumbnail_loc'])}</video:thumbnail_loc>\n")
+        if video.get("title"):
+            parts.append(f"      <video:title>{_esc(video['title'])}</video:title>\n")
+        if video.get("description"):
+            parts.append(f"      <video:description>{_esc(video['description'])}</video:description>\n")
+        if video.get("content_loc"):
+            parts.append(f"      <video:content_loc>{_esc(video['content_loc'])}</video:content_loc>\n")
+        if video.get("player_loc"):
+            parts.append(f"      <video:player_loc>{_esc(video['player_loc'])}</video:player_loc>\n")
+        if video.get("duration") is not None:
+            parts.append(f"      <video:duration>{video['duration']}</video:duration>\n")
+        if video.get("rating") is not None:
+            parts.append(f"      <video:rating>{video['rating']}</video:rating>\n")
+        if video.get("publication_date"):
+            parts.append(f"      <video:publication_date>{_esc(video['publication_date'])}</video:publication_date>\n")
+        parts.append("    </video:video>\n")
+    parts.append("  </url>\n")
+    return "".join(parts).encode("utf-8")
+
+
+def _render_news_url(entry: dict) -> bytes:
+    parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
+    news = entry.get("news")
+    if news:
+        parts.append("    <news:news>\n")
+        parts.append("      <news:publication>\n")
+        parts.append(f"        <news:name>{_esc(news.get('publication_name', ''))}</news:name>\n")
+        parts.append(f"        <news:language>{_esc(news.get('language', 'en'))}</news:language>\n")
+        parts.append("      </news:publication>\n")
+        pub_date = news.get("publication_date")
+        if pub_date is not None:
+            pub_date_str = _format_lastmod(pub_date) or str(pub_date)
+            parts.append(f"      <news:publication_date>{_esc(pub_date_str)}</news:publication_date>\n")
+        parts.append(f"      <news:title>{_esc(news.get('title', ''))}</news:title>\n")
+        parts.append("    </news:news>\n")
+    parts.append("  </url>\n")
+    return "".join(parts).encode("utf-8")
+
+
+_HEADERS: dict[str, bytes] = {
+    "standard": (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    ),
+    "image": (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n'
+    ),
+    "video": (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">\n'
+    ),
+    "news": (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">\n'
+    ),
+}
+
+_FOOTER = b"</urlset>\n"
+
+_RENDERERS = {
+    "standard": _render_standard_url,
+    "image": _render_image_url,
+    "video": _render_video_url,
+    "news": _render_news_url,
+}
+
+
+def _renderer_for(sitemap_type: str):
+    return _RENDERERS.get(sitemap_type, _render_standard_url)
+
+
+def _header_for(sitemap_type: str) -> bytes:
+    return _HEADERS.get(sitemap_type, _HEADERS["standard"])
+
+
+# ---------------------------------------------------------------------------
+# Streaming writer
+# ---------------------------------------------------------------------------
+
+
+class _StreamingSitemapWriter:
+    """Stream a single sitemap shard to a local temp file.
+
+    Writing always goes to a local temp file (optionally gzipped); on
+    ``close()`` the file is uploaded once via the storage backend's
+    ``save()`` API. This bounds memory regardless of entry count and works
+    uniformly across local FS and remote (S3, Spaces, GCS) backends.
+    """
+
+    def __init__(self, sitemap_type: str, *, gzip_enabled: bool):
+        self.sitemap_type = sitemap_type
+        self.gzip_enabled = gzip_enabled
+        self.url_count = 0
+        self.bytes_written = 0
+        self._renderer = _renderer_for(sitemap_type)
+        self._hasher = hashlib.sha256()
+
+        # NamedTemporaryFile with delete=False so we can close-then-reopen
+        # and pass the path to storage.save(). We clean up explicitly in
+        # finalize() / abort(), so a context manager wouldn't help here.
+        self._tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            prefix="icv-sitemap-",
+            suffix=".xml.gz" if gzip_enabled else ".xml",
+            delete=False,
+        )
+        if gzip_enabled:
+            self._gz = gzip.GzipFile(fileobj=self._tmp, mode="wb")
+            self._fh = self._gz
+        else:
+            self._gz = None
+            self._fh = self._tmp
+
+        self._write(_header_for(sitemap_type))
+
+    def _write(self, data: bytes) -> None:
+        self._fh.write(data)
+        self._hasher.update(data)
+        self.bytes_written += len(data)
+
+    def write_entry(self, entry: dict) -> None:
+        self._write(self._renderer(entry))
+        self.url_count += 1
+
+    def estimated_size_after(self, entry: dict) -> int:
+        """Estimate uncompressed XML size after appending *entry*.
+
+        Used for the MAX_FILE_SIZE_BYTES check. We compare against the
+        protocol limit (which is uncompressed); ``bytes_written`` here is
+        also uncompressed because it tracks input bytes to the writer
+        (gzip happens on the underlying handle).
+        """
+        return self.bytes_written + len(entry.get("loc", "")) + 200
+
+    def finalize(self) -> tuple[str, int, str]:
+        """Write footer, close the file, and return (temp_path, size, checksum).
+
+        The caller is responsible for uploading *temp_path* via storage.save()
+        and then unlinking it via :func:`_cleanup_temp`.
+        """
+        self._write(_FOOTER)
+        if self._gz is not None:
+            self._gz.close()
+        self._tmp.close()
+        # On-disk size may differ from bytes_written when gzip is enabled.
+        on_disk_size = os.path.getsize(self._tmp.name)
+        return self._tmp.name, on_disk_size, self._hasher.hexdigest()
+
+    def abort(self) -> None:
+        """Close and unlink the temp file without finalising (error path)."""
+        try:
+            if self._gz is not None:
+                self._gz.close()
+            self._tmp.close()
+        finally:
+            _cleanup_temp(self._tmp.name)
+
+
+def _cleanup_temp(path: str) -> None:
+    """Remove a temp file, swallowing errors."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _upload_temp_to_storage(storage, temp_path: str, dest_path: str) -> tuple[str, int]:
+    """Upload a local temp file to *dest_path* atomically (BR-006).
+
+    Writes to ``dest_path + ".tmp"`` first, then swaps to the final path.
     Returns ``(final_path, size_bytes)``.
+    """
+    tmp_dest = dest_path + ".tmp"
 
-    Atomic write (BR-006): write to a temporary path, then rename.
+    if storage.exists(tmp_dest):
+        storage.delete(tmp_dest)
+    with open(temp_path, "rb") as fh:
+        storage.save(tmp_dest, File(fh))
+
+    if storage.exists(dest_path):
+        storage.delete(dest_path)
+    with open(temp_path, "rb") as fh:
+        storage.save(dest_path, File(fh))
+
+    if storage.exists(tmp_dest):
+        storage.delete(tmp_dest)
+
+    size = os.path.getsize(temp_path)
+    return dest_path, size
+
+
+# ---------------------------------------------------------------------------
+# Buffered fallback (kept behind ICV_SITEMAPS_STREAMING_WRITER=False)
+# ---------------------------------------------------------------------------
+
+
+def _build_buffered_xml(sitemap_type: str, entries: list[dict]) -> bytes:
+    """Build a complete sitemap document in memory.
+
+    Used when ``ICV_SITEMAPS_STREAMING_WRITER`` is disabled and for the
+    sitemap *index* (always small). Reuses the per-entry byte renderers so
+    output is byte-identical to the streaming path.
+    """
+    renderer = _renderer_for(sitemap_type)
+    chunks: list[bytes] = [_header_for(sitemap_type)]
+    for entry in entries:
+        chunks.append(renderer(entry))
+    chunks.append(_FOOTER)
+    return b"".join(chunks)
+
+
+def _write_buffered_to_storage(
+    storage,
+    path: str,
+    data: bytes,
+    *,
+    gzip_enabled: bool = False,
+) -> tuple[str, int]:
+    """Buffered-write fallback for non-streaming callers (e.g. the index).
+
+    Atomic write (BR-006): write to a temporary path, then swap.
     """
     if gzip_enabled:
         buf = io.BytesIO()
@@ -141,170 +424,19 @@ def _write_to_storage(storage, path: str, data: bytes, *, gzip_enabled: bool = F
         if not path.endswith(".gz"):
             path = path + ".gz"
 
-    # Atomic write (BR-006): write to temp path, then overwrite the final path.
-    # Most Django storage backends do not support true rename, so we write
-    # the final file by deleting the old one first and saving fresh.
     tmp_path = path + ".tmp"
-
-    # Write to temp path first.
     if storage.exists(tmp_path):
         storage.delete(tmp_path)
     storage.save(tmp_path, ContentFile(data))
 
-    # Swap temp → final: delete old file, save data to final path.
     if storage.exists(path):
         storage.delete(path)
     storage.save(path, ContentFile(data))
 
-    # Remove temp file now that final file is in place.
     if storage.exists(tmp_path):
         storage.delete(tmp_path)
 
     return path, len(data)
-
-
-# ---------------------------------------------------------------------------
-# XML builders
-# ---------------------------------------------------------------------------
-
-
-def _build_standard_xml(entries: list[dict]) -> bytes:
-    """Build a standard sitemap XML document."""
-    root = ET.Element(
-        "urlset",
-        xmlns=SITEMAP_NS,
-    )
-    for entry in entries:
-        url_el = ET.SubElement(root, "url")
-        ET.SubElement(url_el, "loc").text = entry["loc"]
-        if entry.get("lastmod"):
-            ET.SubElement(url_el, "lastmod").text = entry["lastmod"]
-        if entry.get("changefreq"):
-            ET.SubElement(url_el, "changefreq").text = entry["changefreq"]
-        if entry.get("priority") is not None:
-            ET.SubElement(url_el, "priority").text = str(entry["priority"])
-    return _xml_bytes(root)
-
-
-def _build_image_xml(entries: list[dict]) -> bytes:
-    """Build an image sitemap XML document (BR-013)."""
-    ET.register_namespace("", SITEMAP_NS)
-    ET.register_namespace("image", IMAGE_NS)
-
-    root = ET.Element(
-        "urlset",
-        attrib={
-            "xmlns": SITEMAP_NS,
-            "xmlns:image": IMAGE_NS,
-        },
-    )
-    for entry in entries:
-        url_el = ET.SubElement(root, "url")
-        ET.SubElement(url_el, "loc").text = entry["loc"]
-        if entry.get("lastmod"):
-            ET.SubElement(url_el, "lastmod").text = entry["lastmod"]
-        if entry.get("changefreq"):
-            ET.SubElement(url_el, "changefreq").text = entry["changefreq"]
-        if entry.get("priority") is not None:
-            ET.SubElement(url_el, "priority").text = str(entry["priority"])
-        for image in entry.get("images", []):
-            img_el = ET.SubElement(url_el, f"{{{IMAGE_NS}}}image")
-            ET.SubElement(img_el, f"{{{IMAGE_NS}}}loc").text = image["loc"]
-            if image.get("caption"):
-                ET.SubElement(img_el, f"{{{IMAGE_NS}}}caption").text = image["caption"]
-            if image.get("title"):
-                ET.SubElement(img_el, f"{{{IMAGE_NS}}}title").text = image["title"]
-            if image.get("geo_location"):
-                ET.SubElement(img_el, f"{{{IMAGE_NS}}}geo_location").text = image["geo_location"]
-            if image.get("license"):
-                ET.SubElement(img_el, f"{{{IMAGE_NS}}}license").text = image["license"]
-    return _xml_bytes(root)
-
-
-def _build_video_xml(entries: list[dict]) -> bytes:
-    """Build a video sitemap XML document (BR-014)."""
-    ET.register_namespace("", SITEMAP_NS)
-    ET.register_namespace("video", VIDEO_NS)
-
-    root = ET.Element(
-        "urlset",
-        attrib={
-            "xmlns": SITEMAP_NS,
-            "xmlns:video": VIDEO_NS,
-        },
-    )
-    for entry in entries:
-        url_el = ET.SubElement(root, "url")
-        ET.SubElement(url_el, "loc").text = entry["loc"]
-        if entry.get("lastmod"):
-            ET.SubElement(url_el, "lastmod").text = entry["lastmod"]
-        if entry.get("changefreq"):
-            ET.SubElement(url_el, "changefreq").text = entry["changefreq"]
-        if entry.get("priority") is not None:
-            ET.SubElement(url_el, "priority").text = str(entry["priority"])
-        video = entry.get("video")
-        if video:
-            vid_el = ET.SubElement(url_el, f"{{{VIDEO_NS}}}video")
-            if video.get("thumbnail_loc"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}thumbnail_loc").text = video["thumbnail_loc"]
-            if video.get("title"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}title").text = video["title"]
-            if video.get("description"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}description").text = video["description"]
-            if video.get("content_loc"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}content_loc").text = video["content_loc"]
-            if video.get("player_loc"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}player_loc").text = video["player_loc"]
-            if video.get("duration") is not None:
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}duration").text = str(video["duration"])
-            if video.get("rating") is not None:
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}rating").text = str(video["rating"])
-            if video.get("publication_date"):
-                ET.SubElement(vid_el, f"{{{VIDEO_NS}}}publication_date").text = str(video["publication_date"])
-    return _xml_bytes(root)
-
-
-def _build_news_xml(entries: list[dict]) -> bytes:
-    """Build a news sitemap XML document (BR-015, BR-016)."""
-    ET.register_namespace("", SITEMAP_NS)
-    ET.register_namespace("news", NEWS_NS)
-
-    root = ET.Element(
-        "urlset",
-        attrib={
-            "xmlns": SITEMAP_NS,
-            "xmlns:news": NEWS_NS,
-        },
-    )
-    for entry in entries:
-        url_el = ET.SubElement(root, "url")
-        ET.SubElement(url_el, "loc").text = entry["loc"]
-        news = entry.get("news")
-        if news:
-            news_el = ET.SubElement(url_el, f"{{{NEWS_NS}}}news")
-            pub_el = ET.SubElement(news_el, f"{{{NEWS_NS}}}publication")
-            ET.SubElement(pub_el, f"{{{NEWS_NS}}}name").text = news.get("publication_name", "")
-            ET.SubElement(pub_el, f"{{{NEWS_NS}}}language").text = news.get("language", "en")
-            pub_date = news.get("publication_date")
-            if pub_date is not None:
-                pub_date_str = _format_lastmod(pub_date) or str(pub_date)
-                ET.SubElement(news_el, f"{{{NEWS_NS}}}publication_date").text = pub_date_str
-            ET.SubElement(news_el, f"{{{NEWS_NS}}}title").text = news.get("title", "")
-    return _xml_bytes(root)
-
-
-def _xml_bytes(root: ET.Element) -> bytes:
-    """Serialise an ElementTree root element to bytes with XML declaration."""
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space="  ")
-    # Use a StringIO so tree.write(encoding="unicode") can write strings,
-    # then encode the whole thing to UTF-8 bytes at the end.
-    import io as _io
-
-    sbuf = _io.StringIO()
-    sbuf.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-    tree.write(sbuf, encoding="unicode", xml_declaration=False)
-    return sbuf.getvalue().encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -349,48 +481,6 @@ def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def _should_ping(tenant_id: str = "") -> bool:
-    """Return True if the sitemap index has changed since the last ping (BR-017).
-
-    Reads the current index file from storage, computes a SHA-256 checksum, and
-    compares it against the value stored in cache.  Returns ``True`` (and updates
-    the cache) when the checksum differs, so pinging only happens when something
-    actually changed.  Returns ``True`` when the index cannot be read, to err on
-    the side of pinging.
-    """
-    from django.core.cache import cache as django_cache
-    from django.core.files.storage import default_storage
-
-    from icv_sitemaps.conf import ICV_SITEMAPS_GZIP, ICV_SITEMAPS_STORAGE_PATH
-
-    storage_dir = ICV_SITEMAPS_STORAGE_PATH.rstrip("/")
-    base_path = f"{storage_dir}/{tenant_id}/sitemap.xml" if tenant_id else f"{storage_dir}/sitemap.xml"
-    candidate_paths = [base_path + ".gz", base_path] if ICV_SITEMAPS_GZIP else [base_path]
-
-    new_checksum: str | None = None
-    for path in candidate_paths:
-        try:
-            if default_storage.exists(path):
-                with default_storage.open(path, "rb") as fh:
-                    new_checksum = _checksum(fh.read())
-                break
-        except Exception:
-            continue
-
-    if new_checksum is None:
-        # Cannot read index — ping to be safe.
-        return True
-
-    cache_key = f"icv_sitemaps:index_checksum:{tenant_id}"
-    old_checksum = django_cache.get(cache_key)
-
-    if new_checksum == old_checksum:
-        return False
-
-    django_cache.set(cache_key, new_checksum, timeout=None)
-    return True
-
-
 def generate_section(
     name_or_section,
     *,
@@ -412,6 +502,7 @@ def generate_section(
         ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
         ICV_SITEMAPS_MAX_URLS_PER_FILE,
         ICV_SITEMAPS_NEWS_MAX_AGE_DAYS,
+        ICV_SITEMAPS_STREAMING_WRITER,
     )
     from icv_sitemaps.models.sections import SitemapFile, SitemapGenerationLog, SitemapSection
     from icv_sitemaps.signals import sitemap_section_generated
@@ -468,93 +559,47 @@ def generate_section(
     # Track previously generated files for cleanup (BR-029).
     old_paths = set(section.files.values_list("storage_path", flat=True))
 
-    # Accumulate entries across batches, splitting into files when limits hit.
-    current_entries: list[dict] = []
-    current_size: int = 0
-    file_sequence: int = 0
-    total_urls: int = 0
     new_files: list[dict] = []  # list of {sequence, path, url_count, size, checksum}
+    file_sequence = 0
+    total_urls = 0
 
-    def _flush_file(entries: list[dict], sequence: int) -> None:
-        nonlocal total_urls
-        if not entries:
-            return
-
-        data = _build_xml_for_type(sitemap_type, entries)
-        ext = ".xml"
-        filename = f"{section.name}-{sequence}{ext}"
-        path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
-        final_path, size = _write_to_storage(storage, path, data, gzip_enabled=ICV_SITEMAPS_GZIP)
-        digest = _checksum(data)
-        new_files.append(
-            {
-                "sequence": sequence,
-                "path": final_path,
-                "url_count": len(entries),
-                "size": size,
-                "checksum": digest,
-            }
+    if ICV_SITEMAPS_STREAMING_WRITER:
+        total_urls, new_files = _generate_streaming(
+            section=section,
+            tenant_id=tenant_id,
+            queryset=queryset,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+            cutoff=cutoff if section.sitemap_type == "news" else None,
+            model_class=model_class,
+            storage=storage,
+            gzip_enabled=ICV_SITEMAPS_GZIP,
+            batch_size=ICV_SITEMAPS_BATCH_SIZE,
+            max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
+            max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
         )
-        total_urls += len(entries)
-
-    # Keyset pagination: issue a fresh query per batch to avoid long-running
-    # cursors that get killed by managed Postgres SSL/idle timeouts (BR-GEN-001).
-    from django.db import close_old_connections
-
-    last_pk = None
-    while True:
-        chunk_qs = queryset.order_by("pk")
-        if last_pk is not None:
-            chunk_qs = chunk_qs.filter(pk__gt=last_pk)
-        chunk = list(chunk_qs[:ICV_SITEMAPS_BATCH_SIZE])
-        if not chunk:
-            break
-
-        for instance in chunk:
-            # Skip news entries older than cutoff (BR-015).
-            if section.sitemap_type == "news":
-                news_date_field = getattr(model_class, "sitemap_news_date_field", "")
-                if news_date_field:
-                    pub_date = getattr(instance, news_date_field, None)
-                    if pub_date is not None and pub_date < cutoff:
-                        continue
-
-            entry = _extract_entry(instance, sitemap_type, base_url_setting)
-            if entry is None:
-                continue
-
-            # Estimate entry size.
-            entry_size_estimate = len(entry.get("loc", "")) + 200
-
-            # Check if adding this entry would exceed limits (BR-001, BR-002).
-            if current_entries and (
-                len(current_entries) >= ICV_SITEMAPS_MAX_URLS_PER_FILE
-                or current_size + entry_size_estimate > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES
-            ):
-                _flush_file(current_entries, file_sequence)
-                file_sequence += 1
-                current_entries = []
-                current_size = 0
-
-            current_entries.append(entry)
-            current_size += entry_size_estimate
-
-        last_pk = chunk[-1].pk
-        close_old_connections()
-
-    # Flush the last batch.
-    _flush_file(current_entries, file_sequence)
+    else:
+        total_urls, new_files = _generate_buffered(
+            section=section,
+            tenant_id=tenant_id,
+            queryset=queryset,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+            cutoff=cutoff if section.sitemap_type == "news" else None,
+            model_class=model_class,
+            storage=storage,
+            gzip_enabled=ICV_SITEMAPS_GZIP,
+            batch_size=ICV_SITEMAPS_BATCH_SIZE,
+            max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
+            max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+        )
 
     # Write a valid empty urlset for sections with no URLs (TS-012).
     if not new_files:
-        empty_data = _build_xml_for_type(sitemap_type, [])
-        ext = ".xml"
-        filename = f"{section.name}-0{ext}"
-        path = _storage_path(
-            filename,
-            tenant_id=tenant_id if tenant_id else section.tenant_id,
-        )
-        final_path, size = _write_to_storage(storage, path, empty_data, gzip_enabled=ICV_SITEMAPS_GZIP)
+        empty_data = _build_buffered_xml(sitemap_type, [])
+        filename = f"{section.name}-{file_sequence}.xml"
+        path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
+        final_path, size = _write_buffered_to_storage(storage, path, empty_data, gzip_enabled=ICV_SITEMAPS_GZIP)
         new_files.append(
             {
                 "sequence": 0,
@@ -643,6 +688,227 @@ def generate_section(
     return total_urls
 
 
+def _iter_section_entries(
+    *,
+    queryset,
+    section,
+    sitemap_type: str,
+    base_url_setting: str,
+    cutoff,
+    model_class,
+    batch_size: int,
+):
+    """Yield ``(entry_dict)`` for every eligible instance.
+
+    Uses keyset pagination so we don't hold a long-running cursor across
+    managed Postgres SSL/idle timeouts (BR-GEN-001).
+    """
+    from django.db import close_old_connections
+
+    news_date_field = ""
+    if sitemap_type == "news":
+        news_date_field = getattr(model_class, "sitemap_news_date_field", "")
+
+    last_pk = None
+    while True:
+        chunk_qs = queryset.order_by("pk")
+        if last_pk is not None:
+            chunk_qs = chunk_qs.filter(pk__gt=last_pk)
+        chunk = list(chunk_qs[:batch_size])
+        if not chunk:
+            break
+
+        for instance in chunk:
+            if sitemap_type == "news" and news_date_field and cutoff is not None:
+                pub_date = getattr(instance, news_date_field, None)
+                if pub_date is not None and pub_date < cutoff:
+                    continue
+
+            entry = _extract_entry(instance, sitemap_type, base_url_setting)
+            if entry is None:
+                continue
+
+            yield entry
+
+        last_pk = chunk[-1].pk
+        close_old_connections()
+
+
+def _generate_streaming(
+    *,
+    section,
+    tenant_id: str,
+    queryset,
+    sitemap_type: str,
+    base_url_setting: str,
+    cutoff,
+    model_class,
+    storage,
+    gzip_enabled: bool,
+    batch_size: int,
+    max_urls: int,
+    max_bytes: int,
+) -> tuple[int, list[dict]]:
+    """Stream entries directly to per-shard temp files, then upload each."""
+    new_files: list[dict] = []
+    file_sequence = 0
+    total_urls = 0
+
+    writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
+    try:
+        for entry in _iter_section_entries(
+            queryset=queryset,
+            section=section,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+            cutoff=cutoff,
+            model_class=model_class,
+            batch_size=batch_size,
+        ):
+            if writer.url_count >= max_urls or (
+                writer.url_count > 0 and writer.estimated_size_after(entry) > max_bytes
+            ):
+                temp_path, size, checksum = writer.finalize()
+                try:
+                    final_path = _publish_shard(
+                        section=section,
+                        tenant_id=tenant_id,
+                        sequence=file_sequence,
+                        storage=storage,
+                        temp_path=temp_path,
+                        gzip_enabled=gzip_enabled,
+                    )
+                finally:
+                    _cleanup_temp(temp_path)
+                new_files.append(
+                    {
+                        "sequence": file_sequence,
+                        "path": final_path,
+                        "url_count": writer.url_count,
+                        "size": size,
+                        "checksum": checksum,
+                    }
+                )
+                total_urls += writer.url_count
+                file_sequence += 1
+                writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
+
+            writer.write_entry(entry)
+
+        # Final shard (only if it has any entries).
+        if writer.url_count > 0:
+            temp_path, size, checksum = writer.finalize()
+            try:
+                final_path = _publish_shard(
+                    section=section,
+                    tenant_id=tenant_id,
+                    sequence=file_sequence,
+                    storage=storage,
+                    temp_path=temp_path,
+                    gzip_enabled=gzip_enabled,
+                )
+            finally:
+                _cleanup_temp(temp_path)
+            new_files.append(
+                {
+                    "sequence": file_sequence,
+                    "path": final_path,
+                    "url_count": writer.url_count,
+                    "size": size,
+                    "checksum": checksum,
+                }
+            )
+            total_urls += writer.url_count
+        else:
+            writer.abort()
+    except Exception:
+        writer.abort()
+        raise
+
+    return total_urls, new_files
+
+
+def _publish_shard(
+    *,
+    section,
+    tenant_id: str,
+    sequence: int,
+    storage,
+    temp_path: str,
+    gzip_enabled: bool,
+) -> str:
+    """Upload a finalised shard temp file to its final storage path."""
+    filename = f"{section.name}-{sequence}.xml"
+    if gzip_enabled:
+        filename += ".gz"
+    dest = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
+    final_path, _ = _upload_temp_to_storage(storage, temp_path, dest)
+    return final_path
+
+
+def _generate_buffered(
+    *,
+    section,
+    tenant_id: str,
+    queryset,
+    sitemap_type: str,
+    base_url_setting: str,
+    cutoff,
+    model_class,
+    storage,
+    gzip_enabled: bool,
+    batch_size: int,
+    max_urls: int,
+    max_bytes: int,
+) -> tuple[int, list[dict]]:
+    """Legacy buffered code path (ICV_SITEMAPS_STREAMING_WRITER=False)."""
+    new_files: list[dict] = []
+    file_sequence = 0
+    total_urls = 0
+    current_entries: list[dict] = []
+    current_size = 0
+
+    def _flush() -> None:
+        nonlocal total_urls, file_sequence, current_entries, current_size
+        if not current_entries:
+            return
+        data = _build_buffered_xml(sitemap_type, current_entries)
+        filename = f"{section.name}-{file_sequence}.xml"
+        path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
+        final_path, size = _write_buffered_to_storage(storage, path, data, gzip_enabled=gzip_enabled)
+        new_files.append(
+            {
+                "sequence": file_sequence,
+                "path": final_path,
+                "url_count": len(current_entries),
+                "size": size,
+                "checksum": _checksum(data),
+            }
+        )
+        total_urls += len(current_entries)
+        file_sequence += 1
+        current_entries = []
+        current_size = 0
+
+    for entry in _iter_section_entries(
+        queryset=queryset,
+        section=section,
+        sitemap_type=sitemap_type,
+        base_url_setting=base_url_setting,
+        cutoff=cutoff,
+        model_class=model_class,
+        batch_size=batch_size,
+    ):
+        entry_size_estimate = len(entry.get("loc", "")) + 200
+        if current_entries and (len(current_entries) >= max_urls or current_size + entry_size_estimate > max_bytes):
+            _flush()
+        current_entries.append(entry)
+        current_size += entry_size_estimate
+
+    _flush()
+    return total_urls, new_files
+
+
 def _should_ping(*, tenant_id: str = "") -> bool:
     """Return True when search engine pinging is enabled.
 
@@ -654,17 +920,6 @@ def _should_ping(*, tenant_id: str = "") -> bool:
     from icv_sitemaps.conf import ICV_SITEMAPS_PING_ENABLED
 
     return ICV_SITEMAPS_PING_ENABLED
-
-
-def _build_xml_for_type(sitemap_type: str, entries: list[dict]) -> bytes:
-    """Dispatch to the correct XML builder based on *sitemap_type*."""
-    if sitemap_type == "image":
-        return _build_image_xml(entries)
-    if sitemap_type == "video":
-        return _build_video_xml(entries)
-    if sitemap_type == "news":
-        return _build_news_xml(entries)
-    return _build_standard_xml(entries)
 
 
 def _get_base_url() -> str:
@@ -742,24 +997,29 @@ def generate_index(*, tenant_id: str = "") -> str:
 
     base_url = _get_base_url().rstrip("/")
 
-    # Build the index XML.
+    # Build the index XML (small — always buffered).
     ET.register_namespace("", SITEMAP_NS)
     root = ET.Element("sitemapindex", attrib={"xmlns": SITEMAP_NS})
 
     for sf in sitemap_files:
         sitemap_el = ET.SubElement(root, "sitemap")
-        # Build a public URL from the storage path.
         loc = f"{base_url}/{sf.storage_path.lstrip('/')}"
         ET.SubElement(sitemap_el, "loc").text = loc
         lastmod = _format_lastmod(sf.generated_at)
         if lastmod:
             ET.SubElement(sitemap_el, "lastmod").text = lastmod
 
-    data = _xml_bytes(root)
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    sbuf = io.StringIO()
+    sbuf.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+    tree.write(sbuf, encoding="unicode", xml_declaration=False)
+    data = sbuf.getvalue().encode("utf-8")
+
     index_filename = "sitemap.xml"
     index_path = _storage_path(index_filename, tenant_id=tenant_id)
 
-    final_path, _ = _write_to_storage(storage, index_path, data, gzip_enabled=ICV_SITEMAPS_GZIP)
+    final_path, _ = _write_buffered_to_storage(storage, index_path, data, gzip_enabled=ICV_SITEMAPS_GZIP)
 
     logger.debug("generate_index: wrote %r", final_path)
     return final_path
@@ -788,7 +1048,6 @@ def mark_section_stale(
     ).update(is_stale=True)
 
     if updated:
-        # Fetch section for signal — only when state actually changed.
         try:
             section = SitemapSection.objects.get(name=section_name, tenant_id=tenant_id)
             sitemap_section_stale.send(sender=section.__class__, instance=section)
@@ -796,7 +1055,6 @@ def mark_section_stale(
             pass
         return True
 
-    # Check if the section exists but was already stale.
     return SitemapSection.objects.filter(name=section_name, tenant_id=tenant_id).exists()
 
 
