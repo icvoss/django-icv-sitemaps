@@ -37,6 +37,10 @@ NEWS_NS = "http://www.google.com/schemas/sitemap-news/0.9"
 # Regex for sanitising tenant IDs in storage paths (issue #5)
 _SAFE_TENANT_RE = re.compile(r"^[\w\-]+$")
 
+# How often (in chunks) to force a full gc.collect() during iteration.
+# With batch_size=5000 and _GC_INTERVAL=10 this fires every ~50K rows.
+_GC_INTERVAL = 10
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -702,14 +706,30 @@ def _iter_section_entries(
 
     Uses keyset pagination so we don't hold a long-running cursor across
     managed Postgres SSL/idle timeouts (BR-GEN-001).
+
+    Memory management: Django model instances form reference cycles
+    (``_state``, descriptor caches, deferred attrs) that CPython's
+    generational GC promotes to gen-2, which is collected infrequently.
+    On multi-million-row sections these zombie cycles accumulate faster
+    than gen-2 collection runs, causing monotonic RSS growth.
+
+    We break this by:
+    - explicitly ``del``-ing the chunk list after extracting entries
+    - calling ``gc.collect()`` every ``_GC_INTERVAL`` chunks to flush
+      promoted cycles before they pile up
+    - calling ``reset_queries()`` to prevent any residual query-log
+      growth (safe even when ``DEBUG=False``)
     """
-    from django.db import close_old_connections
+    import gc
+
+    from django.db import close_old_connections, reset_queries
 
     news_date_field = ""
     if sitemap_type == "news":
         news_date_field = getattr(model_class, "sitemap_news_date_field", "")
 
     last_pk = None
+    chunk_count = 0
     while True:
         chunk_qs = queryset.order_by("pk")
         if last_pk is not None:
@@ -717,6 +737,8 @@ def _iter_section_entries(
         chunk = list(chunk_qs[:batch_size])
         if not chunk:
             break
+
+        last_pk = chunk[-1].pk
 
         for instance in chunk:
             if sitemap_type == "news" and news_date_field and cutoff is not None:
@@ -730,7 +752,21 @@ def _iter_section_entries(
 
             yield entry
 
-        last_pk = chunk[-1].pk
+        # Release all model instances and their cached relations before
+        # the next chunk — prevents the generator frame from pinning
+        # 5000 instances (+ prefetch caches) across the yield boundary.
+        del chunk
+        chunk_count += 1
+
+        reset_queries()
+
+        # Force a full GC collection every _GC_INTERVAL chunks to
+        # reclaim ref-cycles promoted to gen-2. On a 2.4M-row section
+        # with batch_size=5000 this fires ~every 50K rows — frequent
+        # enough to bound RSS, infrequent enough to be negligible cost.
+        if chunk_count % _GC_INTERVAL == 0:
+            gc.collect()
+
         close_old_connections()
 
 

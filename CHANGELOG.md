@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-16
+
+### Fixed
+
+- **Memory leak on large sections** — Django model instances form
+  reference cycles (`_state`, descriptor caches, deferred attrs) that
+  CPython's generational GC promotes to gen-2. On multi-million-row
+  sections these zombie cycles accumulated faster than gen-2 collection
+  ran, causing monotonic RSS growth (observed 10.8 GB on a 2.4M-row
+  products section). Fixed by:
+  - explicitly `del`-ing the chunk list after extracting entries, so
+    5000 model instances + their prefetch caches are released before
+    the next DB fetch instead of lingering in the generator frame
+  - calling `gc.collect()` every 10 chunks (~50K rows) to flush
+    ref-cycles promoted to gen-2 before they pile up
+  - calling `reset_queries()` each chunk to prevent any residual
+    query-log growth (safe even when `DEBUG=False`)
+
 ## [0.5.0] - 2026-04-16
 
 ### Performance
