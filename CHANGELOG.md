@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-24
+
 ### Fixed
 
 - `generate_section` no longer masks generation failures. A storage upload

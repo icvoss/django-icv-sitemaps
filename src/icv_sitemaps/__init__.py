@@ -2,7 +2,7 @@
 icv-sitemaps — Scalable sitemap generation and web discovery infrastructure for Django.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 default_app_config = "icv_sitemaps.apps.IcvSitemapsConfig"
 
