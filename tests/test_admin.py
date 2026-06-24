@@ -184,3 +184,37 @@ class TestRedirectLogAdmin:
         from django.contrib import admin
 
         assert admin.site.is_registered(RedirectLog)
+
+
+class TestCreateGoneFrom404Action:
+    """The 410-from-404 bulk action surfaces per-row failures, not just a count."""
+
+    def test_failures_are_reported_not_swallowed(self, db):
+        from unittest.mock import MagicMock, patch
+
+        from icv_sitemaps.admin import create_gone_from_404
+        from icv_sitemaps.testing.factories import RedirectLogFactory
+
+        RedirectLogFactory(path="/gone-1", resolved=False)
+        RedirectLogFactory(path="/gone-2", resolved=False)
+
+        modeladmin = MagicMock()
+        request = MagicMock()
+        queryset = RedirectLog.objects.all()
+
+        with (
+            patch(
+                "icv_sitemaps.services.redirects.add_redirect",
+                side_effect=ValueError("bad redirect"),
+            ),
+            patch("icv_sitemaps.admin.logger") as mock_logger,
+        ):
+            create_gone_from_404(modeladmin, request, queryset)
+
+        # Each failure is logged...
+        assert mock_logger.warning.call_count == 2
+        # ...and the operator is told failures occurred (warning-level message).
+        levels = [kwargs.get("level") for _args, kwargs in modeladmin.message_user.call_args_list]
+        assert "warning" in levels
+        # No rows were marked resolved, since every add_redirect failed.
+        assert RedirectLog.objects.filter(resolved=True).count() == 0

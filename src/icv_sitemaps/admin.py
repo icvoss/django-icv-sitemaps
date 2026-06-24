@@ -1,5 +1,7 @@
 """Admin registrations for icv-sitemaps models."""
 
+import logging
+
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 
@@ -10,6 +12,8 @@ from icv_sitemaps.models.sections import (
     SitemapGenerationLog,
     SitemapSection,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Admin actions
@@ -297,6 +301,7 @@ def create_gone_from_404(modeladmin, request, queryset):
     from icv_sitemaps.services.redirects import add_redirect
 
     count = 0
+    failed = 0
     for log_entry in queryset.filter(resolved=False):
         try:
             add_redirect(
@@ -311,11 +316,23 @@ def create_gone_from_404(modeladmin, request, queryset):
             log_entry.save(update_fields=["resolved"])
             count += 1
         except Exception:
-            pass
+            failed += 1
+            logger.warning(
+                "create_410_rules: failed to create 410 for %r (tenant=%r)",
+                log_entry.path,
+                log_entry.tenant_id,
+                exc_info=True,
+            )
     modeladmin.message_user(
         request,
         _("%(count)d 410 Gone rule(s) created.") % {"count": count},
     )
+    if failed:
+        modeladmin.message_user(
+            request,
+            _("%(failed)d entry/entries could not be converted (see server logs).") % {"failed": failed},
+            level="warning",
+        )
 
 
 @admin.register(RedirectLog)
