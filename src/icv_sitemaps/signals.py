@@ -6,6 +6,10 @@ from django.dispatch import Signal
 # Provides: instance, url_count, file_count, duration_ms
 sitemap_section_generated = Signal()
 
+# Fired when section generation fails (e.g. a storage upload error)
+# Provides: instance, error (the exception), detail (str)
+sitemap_section_generation_failed = Signal()
+
 # Fired after all sections are generated
 # Provides: sections, total_urls, duration_ms
 sitemap_generation_complete = Signal()

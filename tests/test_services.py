@@ -519,6 +519,65 @@ class TestGenerateSection:
         assert SitemapFile.objects.filter(section=section).count() == 2
 
 
+class TestGenerateSectionFailure:
+    """Generation failures (e.g. storage upload errors) are recorded, not masked."""
+
+    def _make_section(self, settings, tmp_path):
+        settings.MEDIA_ROOT = str(tmp_path)
+        from sitemaps_testapp.models import Article
+
+        Article.objects.create(title="Article 1", slug="article-1", is_published=True)
+        Article.objects.create(title="Article 2", slug="article-2", is_published=True)
+        return SitemapSectionFactory(
+            name="articles",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+    def test_upload_failure_marks_log_failed_and_reraises(self, db, tmp_path, settings):
+        from unittest.mock import patch
+
+        import icv_sitemaps.conf as conf_mod
+        from icv_sitemaps.signals import sitemap_section_generation_failed
+
+        section = self._make_section(settings, tmp_path)
+
+        received = []
+
+        def _handler(sender, instance, error, detail, **kwargs):
+            received.append((instance, error, detail))
+
+        sitemap_section_generation_failed.connect(_handler, dispatch_uid="test_gen_failed")
+        try:
+            with (
+                patch.object(conf_mod, "ICV_SITEMAPS_GZIP", False),
+                patch.object(conf_mod, "ICV_SITEMAPS_BASE_URL", "https://example.com"),
+                patch(
+                    "icv_sitemaps.services.generation._publish_shard",
+                    side_effect=OSError("disk full"),
+                ),
+                pytest.raises(OSError, match="disk full"),
+            ):
+                generate_section(section)
+        finally:
+            sitemap_section_generation_failed.disconnect(dispatch_uid="test_gen_failed")
+
+        # Log must be recorded as failed, not left 'running' or marked 'success'.
+        log = SitemapGenerationLog.objects.filter(section=section, action="generate_section").last()
+        assert log is not None
+        assert log.status == "failed"
+        assert "disk full" in log.detail
+
+        # Failure signal fired with the error.
+        assert len(received) == 1
+        assert "disk full" in received[0][2]
+
+        # Section is not falsely marked fresh.
+        section.refresh_from_db()
+        assert section.is_stale is True
+
+
 # ---------------------------------------------------------------------------
 # generate_index
 # ---------------------------------------------------------------------------

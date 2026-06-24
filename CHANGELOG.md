@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `generate_section` no longer masks generation failures. A storage upload
+  error (or any exception during generation/persistence) previously propagated
+  out leaving the `SitemapGenerationLog` stuck in `running` — no failure
+  recorded, no signal, and the section never marked fresh. Generation is now
+  wrapped so the log is marked `failed` with the error detail, a new
+  `sitemap_section_generation_failed` signal is emitted (provides `instance`,
+  `error`, `detail`), and the exception is re-raised so callers and Celery see
+  it.
+
+### Added
+
+- `sitemap_section_generation_failed` signal — fired when section generation
+  fails.
+
 ## [0.5.1] - 2026-04-16
 
 ### Fixed

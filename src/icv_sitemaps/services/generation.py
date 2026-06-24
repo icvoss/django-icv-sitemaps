@@ -509,7 +509,7 @@ def generate_section(
         ICV_SITEMAPS_STREAMING_WRITER,
     )
     from icv_sitemaps.models.sections import SitemapFile, SitemapGenerationLog, SitemapSection
-    from icv_sitemaps.signals import sitemap_section_generated
+    from icv_sitemaps.signals import sitemap_section_generated, sitemap_section_generation_failed
 
     # Resolve section.
     if isinstance(name_or_section, str):
@@ -567,97 +567,113 @@ def generate_section(
     file_sequence = 0
     total_urls = 0
 
-    if ICV_SITEMAPS_STREAMING_WRITER:
-        total_urls, new_files = _generate_streaming(
-            section=section,
-            tenant_id=tenant_id,
-            queryset=queryset,
-            sitemap_type=sitemap_type,
-            base_url_setting=base_url_setting,
-            cutoff=cutoff if section.sitemap_type == "news" else None,
-            model_class=model_class,
-            storage=storage,
-            gzip_enabled=ICV_SITEMAPS_GZIP,
-            batch_size=ICV_SITEMAPS_BATCH_SIZE,
-            max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
-            max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+    try:
+        if ICV_SITEMAPS_STREAMING_WRITER:
+            total_urls, new_files = _generate_streaming(
+                section=section,
+                tenant_id=tenant_id,
+                queryset=queryset,
+                sitemap_type=sitemap_type,
+                base_url_setting=base_url_setting,
+                cutoff=cutoff if section.sitemap_type == "news" else None,
+                model_class=model_class,
+                storage=storage,
+                gzip_enabled=ICV_SITEMAPS_GZIP,
+                batch_size=ICV_SITEMAPS_BATCH_SIZE,
+                max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
+                max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+            )
+        else:
+            total_urls, new_files = _generate_buffered(
+                section=section,
+                tenant_id=tenant_id,
+                queryset=queryset,
+                sitemap_type=sitemap_type,
+                base_url_setting=base_url_setting,
+                cutoff=cutoff if section.sitemap_type == "news" else None,
+                model_class=model_class,
+                storage=storage,
+                gzip_enabled=ICV_SITEMAPS_GZIP,
+                batch_size=ICV_SITEMAPS_BATCH_SIZE,
+                max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
+                max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+            )
+
+        # Write a valid empty urlset for sections with no URLs (TS-012).
+        if not new_files:
+            empty_data = _build_buffered_xml(sitemap_type, [])
+            filename = f"{section.name}-{file_sequence}.xml"
+            path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
+            final_path, size = _write_buffered_to_storage(storage, path, empty_data, gzip_enabled=ICV_SITEMAPS_GZIP)
+            new_files.append(
+                {
+                    "sequence": 0,
+                    "path": final_path,
+                    "url_count": 0,
+                    "size": size,
+                    "checksum": _checksum(empty_data),
+                }
+            )
+
+        # Update DB records for generated files.
+        section.files.all().delete()
+        for f in new_files:
+            SitemapFile.objects.create(
+                section=section,
+                sequence=f["sequence"],
+                storage_path=f["path"],
+                url_count=f["url_count"],
+                file_size_bytes=f["size"],
+                checksum=f["checksum"],
+            )
+
+        # Remove stale storage files that are no longer referenced (BR-029).
+        new_paths = {f["path"] for f in new_files}
+        for stale_path in old_paths - new_paths:
+            try:
+                if storage.exists(stale_path):
+                    storage.delete(stale_path)
+            except Exception:
+                logger.warning("generate_section: failed to delete stale file %r", stale_path)
+
+        # Update section stats.
+        section.url_count = total_urls
+        section.file_count = len(new_files)
+        section.is_stale = False
+        section.last_generated_at = django_timezone.now()
+        section.save(
+            update_fields=[
+                "url_count",
+                "file_count",
+                "is_stale",
+                "last_generated_at",
+                "updated_at",
+            ]
         )
-    else:
-        total_urls, new_files = _generate_buffered(
-            section=section,
-            tenant_id=tenant_id,
-            queryset=queryset,
-            sitemap_type=sitemap_type,
-            base_url_setting=base_url_setting,
-            cutoff=cutoff if section.sitemap_type == "news" else None,
-            model_class=model_class,
-            storage=storage,
-            gzip_enabled=ICV_SITEMAPS_GZIP,
-            batch_size=ICV_SITEMAPS_BATCH_SIZE,
-            max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
-            max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+
+        duration_ms = int(time.monotonic() * 1000) - start_ms
+
+        # Update generation log.
+        log.status = "success"
+        log.url_count = total_urls
+        log.file_count = len(new_files)
+        log.duration_ms = duration_ms
+        log.save(update_fields=["status", "url_count", "file_count", "duration_ms"])
+    except Exception as exc:
+        # A failure mid-generation (e.g. a storage upload error) must not
+        # leave the log stuck in 'running'. Record the failure, signal it,
+        # and re-raise so callers / Celery see the error.
+        logger.exception("generate_section: %r failed during generation", section.name)
+        log.status = "failed"
+        log.detail = str(exc)
+        log.save(update_fields=["status", "detail"])
+        sitemap_section_generation_failed.send(
+            sender=section.__class__,
+            instance=section,
+            error=exc,
+            detail=str(exc),
         )
-
-    # Write a valid empty urlset for sections with no URLs (TS-012).
-    if not new_files:
-        empty_data = _build_buffered_xml(sitemap_type, [])
-        filename = f"{section.name}-{file_sequence}.xml"
-        path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
-        final_path, size = _write_buffered_to_storage(storage, path, empty_data, gzip_enabled=ICV_SITEMAPS_GZIP)
-        new_files.append(
-            {
-                "sequence": 0,
-                "path": final_path,
-                "url_count": 0,
-                "size": size,
-                "checksum": _checksum(empty_data),
-            }
-        )
-
-    # Update DB records for generated files.
-    section.files.all().delete()
-    for f in new_files:
-        SitemapFile.objects.create(
-            section=section,
-            sequence=f["sequence"],
-            storage_path=f["path"],
-            url_count=f["url_count"],
-            file_size_bytes=f["size"],
-            checksum=f["checksum"],
-        )
-
-    # Remove stale storage files that are no longer referenced (BR-029).
-    new_paths = {f["path"] for f in new_files}
-    for stale_path in old_paths - new_paths:
-        try:
-            if storage.exists(stale_path):
-                storage.delete(stale_path)
-        except Exception:
-            logger.warning("generate_section: failed to delete stale file %r", stale_path)
-
-    # Update section stats.
-    section.url_count = total_urls
-    section.file_count = len(new_files)
-    section.is_stale = False
-    section.last_generated_at = django_timezone.now()
-    section.save(
-        update_fields=[
-            "url_count",
-            "file_count",
-            "is_stale",
-            "last_generated_at",
-            "updated_at",
-        ]
-    )
-
-    duration_ms = int(time.monotonic() * 1000) - start_ms
-
-    # Update generation log.
-    log.status = "success"
-    log.url_count = total_urls
-    log.file_count = len(new_files)
-    log.duration_ms = duration_ms
-    log.save(update_fields=["status", "url_count", "file_count", "duration_ms"])
+        raise
 
     # Regenerate the sitemap index (BR-012).
     generate_index(tenant_id=section.tenant_id)
