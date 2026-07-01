@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-01
+
+### Fixed
+
+- Pre-gzipped `.gz` sitemap files are no longer served with a
+  `Content-Encoding: gzip` header. They are now served as an opaque gzip
+  download (`Content-Type: application/gzip`) with no `Content-Encoding`
+  header, per Google's documented approach for gzipped sitemaps.
+
+  Setting `Content-Encoding: gzip` on a `.gz` entity marks the body as
+  *transport*-compressed, so a fetcher inflates it once at the HTTP layer.
+  Small sitemaps decoded fine, but large product sitemaps (~1.5 MB
+  compressed inflating to ~24 MB, a ~16x ratio) tripped Googlebot's
+  transport-decompression safety cap and returned "Couldn't fetch", while
+  smaller sitemaps in the same index (brands, categories, merchants) read
+  successfully. Serving the `.gz` as an opaque file lets Google decompress
+  it as a sitemap (no transport-inflation cap), and the 50,000-URL /
+  ~23 MB products files parse correctly. Affects the sitemap index view and
+  the individual sitemap file view.
+
 ## [0.6.0] - 2026-06-24
 
 ### Fixed

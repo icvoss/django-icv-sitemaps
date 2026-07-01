@@ -70,6 +70,23 @@ def _validate_filename(filename: str) -> bool:
     return ".." not in normalised.split(os.sep)
 
 
+def _sitemap_response(content: bytes, path: str) -> HttpResponse:
+    """Build an :class:`HttpResponse` for a stored sitemap file.
+
+    Pre-gzipped ``.gz`` files are served as an opaque gzip download
+    (``Content-Type: application/gzip``) with **no** ``Content-Encoding``
+    header.  Search-engine sitemap fetchers (notably Googlebot) do not send
+    ``Accept-Encoding: gzip`` and treat the ``.gz`` entity itself as the
+    gzipped sitemap, decompressing it by content type.  Sending
+    ``Content-Encoding: gzip`` marks the body as *transport*-compressed, which
+    contradicts the ``.gz`` entity semantics and causes the sitemap to be
+    rejected.  Plain files are served as ``application/xml``.
+    """
+    if path.endswith(".gz"):
+        return HttpResponse(content, content_type="application/gzip")
+    return HttpResponse(content, content_type="application/xml")
+
+
 # ---------------------------------------------------------------------------
 # Sitemap views
 # ---------------------------------------------------------------------------
@@ -111,10 +128,7 @@ def sitemap_index_view(request) -> HttpResponse:
                     raise Http404("Sitemap index file exceeds size limit.")
                 with default_storage.open(path, "rb") as fh:
                     content = fh.read()
-                response = HttpResponse(content, content_type="application/xml")
-                if path.endswith(".gz"):
-                    response["Content-Encoding"] = "gzip"
-                return response
+                return _sitemap_response(content, path)
         except Http404:
             raise
         except Exception:
@@ -137,10 +151,7 @@ def sitemap_index_view(request) -> HttpResponse:
                     raise Http404("Sitemap index file exceeds size limit.")
                 with default_storage.open(path, "rb") as fh:
                     content = fh.read()
-                response = HttpResponse(content, content_type="application/xml")
-                if path.endswith(".gz"):
-                    response["Content-Encoding"] = "gzip"
-                return response
+                return _sitemap_response(content, path)
     except Http404:
         raise
     except Exception:
@@ -183,10 +194,7 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
         with default_storage.open(storage_path, "rb") as fh:
             content = fh.read()
 
-        response = HttpResponse(content, content_type="application/xml")
-        if storage_path.endswith(".gz"):
-            response["Content-Encoding"] = "gzip"
-        return response
+        return _sitemap_response(content, storage_path)
     except Http404:
         raise
     except Exception as exc:

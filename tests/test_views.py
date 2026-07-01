@@ -201,6 +201,49 @@ class TestSitemapFileView:
         response = client.get("/sitemaps/nonexistent.xml")
         assert response.status_code == 404
 
+    def test_plain_xml_file_served_as_application_xml(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        response = client.get("/sitemaps/products-0.xml")
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "application/xml"
+        assert "Content-Encoding" not in response
+
+    def test_gz_file_served_as_gzip_without_content_encoding(self, client, db, tmp_path, settings):
+        """Pre-gzipped ``.gz`` sitemaps must be served as an opaque gzip file.
+
+        Setting ``Content-Encoding: gzip`` marks the body as transport-encoded,
+        which contradicts the ``.gz`` entity and causes Googlebot (which does not
+        send ``Accept-Encoding: gzip`` for sitemaps) to reject the file.
+        """
+        import gzip
+
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml.gz", ContentFile(gzip.compress(xml)))
+
+        response = client.get("/sitemaps/products-0.xml.gz")
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "application/gzip"
+        # Critical: no Content-Encoding header for a pre-gzipped .gz entity.
+        assert "Content-Encoding" not in response
+        # Body is the raw gzip file, decompressible to the original XML.
+        assert gzip.decompress(response.content) == xml
+
 
 # ---------------------------------------------------------------------------
 # sitemap index
