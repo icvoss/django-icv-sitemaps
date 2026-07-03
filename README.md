@@ -1,6 +1,6 @@
 # django-icv-sitemaps
 
-[![CI](https://github.com/nigelcopley/icv-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/nigelcopley/icv-oss/actions/workflows/ci.yml)
+[![CI](https://github.com/nigelcopley/django-icv-sitemaps/actions/workflows/ci.yml/badge.svg)](https://github.com/nigelcopley/django-icv-sitemaps/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
 [![Python](https://img.shields.io/pypi/pyversions/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
 [![Django](https://img.shields.io/badge/django-5.1%2B-0C4B33)](https://www.djangoproject.com/)
@@ -20,7 +20,7 @@ and search engine pinging — plus a complete set of web discovery files
 (`robots.txt`, `llms.txt`, `ads.txt`, `security.txt`, `humans.txt`) managed
 from the database.
 
-Part of the [ICV-Django](https://github.com/nigelcopley/icv-oss) ecosystem,
+Part of the ICV-Django ecosystem,
 but **fully standalone** — no other ICV packages required.
 
 ---
@@ -601,7 +601,9 @@ from icv_sitemaps.testing import (
 To run the package's own tests:
 
 ```bash
-cd packages/icv-sitemaps
+git clone https://github.com/nigelcopley/django-icv-sitemaps.git
+cd django-icv-sitemaps
+pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
