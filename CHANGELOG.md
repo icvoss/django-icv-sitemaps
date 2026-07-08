@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Squashed migration `0001_squashed_0004_redirectlog_redirectrule` replacing 0001 to 0004. Existing
+  databases that applied the original series are unaffected (Django
+  no-ops through the `replaces` list); fresh installs apply the single
+  squashed migration. The replaced originals remain in the package and
+  will be removed in the next major release once all installations have
+  passed the squash point.
+
 ## [0.6.1] - 2026-07-01
 
 ### Fixed
