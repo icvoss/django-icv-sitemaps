@@ -8,7 +8,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     replaces = [
         ("icv_sitemaps", "0001_initial"),
         ("icv_sitemaps", "0002_alter_sitemapsection_model_path_and_more"),
@@ -244,9 +243,7 @@ class Migration(migrations.Migration):
                     )
                 ],
                 "constraints": [
-                    models.UniqueConstraint(
-                        fields=("name", "tenant_id"), name="icv_sm_sect_name_tnt_uniq"
-                    )
+                    models.UniqueConstraint(fields=("name", "tenant_id"), name="icv_sm_sect_name_tnt_uniq")
                 ],
             },
         ),
@@ -292,27 +289,19 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "url_count",
-                    models.PositiveIntegerField(
-                        default=0, help_text="Total URLs generated in this run."
-                    ),
+                    models.PositiveIntegerField(default=0, help_text="Total URLs generated in this run."),
                 ),
                 (
                     "file_count",
-                    models.PositiveIntegerField(
-                        default=0, help_text="Number of files written in this run."
-                    ),
+                    models.PositiveIntegerField(default=0, help_text="Number of files written in this run."),
                 ),
                 (
                     "duration_ms",
-                    models.PositiveIntegerField(
-                        default=0, help_text="Generation time in milliseconds."
-                    ),
+                    models.PositiveIntegerField(default=0, help_text="Generation time in milliseconds."),
                 ),
                 (
                     "detail",
-                    models.TextField(
-                        blank=True, help_text="Error message or summary for this run."
-                    ),
+                    models.TextField(blank=True, help_text="Error message or summary for this run."),
                 ),
                 (
                     "section",
@@ -371,9 +360,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "content",
-                    models.TextField(
-                        help_text="Raw file content to serve at the file's canonical URL."
-                    ),
+                    models.TextField(help_text="Raw file content to serve at the file's canonical URL."),
                 ),
                 (
                     "is_active",
@@ -436,15 +423,11 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "url_count",
-                    models.PositiveIntegerField(
-                        default=0, help_text="Number of URLs in this file."
-                    ),
+                    models.PositiveIntegerField(default=0, help_text="Number of URLs in this file."),
                 ),
                 (
                     "file_size_bytes",
-                    models.PositiveIntegerField(
-                        default=0, help_text="Size of the generated XML file in bytes."
-                    ),
+                    models.PositiveIntegerField(default=0, help_text="Size of the generated XML file in bytes."),
                 ),
                 (
                     "checksum",
@@ -456,9 +439,7 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "generated_at",
-                    models.DateTimeField(
-                        auto_now_add=True, help_text="When this file was generated."
-                    ),
+                    models.DateTimeField(auto_now_add=True, help_text="When this file was generated."),
                 ),
                 (
                     "section",
@@ -476,9 +457,7 @@ class Migration(migrations.Migration):
                 "db_table": "icv_sitemaps_file",
                 "ordering": ["section", "sequence"],
                 "constraints": [
-                    models.UniqueConstraint(
-                        fields=("section", "sequence"), name="icv_sm_file_sect_seq_uniq"
-                    )
+                    models.UniqueConstraint(fields=("section", "sequence"), name="icv_sm_file_sect_seq_uniq")
                 ],
             },
         ),
@@ -654,9 +633,7 @@ class Migration(migrations.Migration):
                 "db_table": "icv_sitemaps_redirect_log",
                 "ordering": ["-hit_count"],
                 "constraints": [
-                    models.UniqueConstraint(
-                        fields=("path", "tenant_id"), name="icv_sm_rdlog_path_tnt_uniq"
-                    )
+                    models.UniqueConstraint(fields=("path", "tenant_id"), name="icv_sm_rdlog_path_tnt_uniq")
                 ],
             },
         ),
