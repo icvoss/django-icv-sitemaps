@@ -17,7 +17,7 @@ No database server is required. The test suite uses SQLite.
 ## Local Development Setup
 
 ```bash
-git clone https://github.com/nigelcopley/django-icv-sitemaps.git
+git clone https://github.com/icvoss/django-icv-sitemaps.git
 cd django-icv-sitemaps
 
 # Create a virtual environment
