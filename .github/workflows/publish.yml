@@ -5,7 +5,7 @@ name: Publish django-icv-sitemaps to PyPI
 # OIDC trusted publishing — no API token is required in repository secrets.
 # Configure trusted publishing in your PyPI project settings:
 #   Publisher: GitHub Actions
-#   Owner: nigelcopley
+#   Owner: icvoss
 #   Repository: django-icv-sitemaps
 #   Workflow: publish.yml
 #   Environment: pypi
