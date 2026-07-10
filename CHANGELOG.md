@@ -45,7 +45,7 @@
 
 - `generate_section` no longer masks generation failures. A storage upload
   error (or any exception during generation/persistence) previously propagated
-  out leaving the `SitemapGenerationLog` stuck in `running` — no failure
+  out leaving the `SitemapGenerationLog` stuck in `running`: no failure
   recorded, no signal, and the section never marked fresh. Generation is now
   wrapped so the log is marked `failed` with the error detail, a new
   `sitemap_section_generation_failed` signal is emitted (provides `instance`,
@@ -59,14 +59,14 @@
 
 ### Added
 
-- `sitemap_section_generation_failed` signal — fired when section generation
+- `sitemap_section_generation_failed` signal: fired when section generation
   fails.
 
 ## [0.5.1] - 2026-04-16
 
 ### Fixed
 
-- **Memory leak on large sections** — Django model instances form
+- **Memory leak on large sections**: Django model instances form
   reference cycles (`_state`, descriptor caches, deferred attrs) that
   CPython's generational GC promotes to gen-2. On multi-million-row
   sections these zombie cycles accumulated faster than gen-2 collection
@@ -84,11 +84,11 @@
 
 ### Performance
 
-- **Streaming XML writer** — `generate_section()` now serialises entries
+- **Streaming XML writer**: `generate_section()` now serialises entries
   directly to a local temp file as they are extracted, instead of
   accumulating up to `ICV_SITEMAPS_MAX_URLS_PER_FILE` dicts in memory and
   building an ElementTree at flush time. Per-section peak memory drops
-  from ~1.4 GB to ~50–100 MB on 50K-URL shards, and per-file generation
+  from ~1.4 GB to between ~50 and 100 MB on 50K-URL shards, and per-file generation
   time is flat instead of degrading as the run progresses. The finalised
   temp file is uploaded once to the configured storage backend at file
   boundary, preserving atomic-swap semantics and working uniformly across
@@ -99,7 +99,7 @@
 ### Added
 
 - `ICV_SITEMAPS_STREAMING_WRITER` setting (default `True`). Set to
-  `False` to fall back to the buffered code path if needed — both paths
+  `False` to fall back to the buffered code path if needed; both paths
   produce equivalent output.
 
 ### Fixed
@@ -115,7 +115,7 @@
 
 ### Fixed
 
-- All views now accept `HEAD` requests — replaced `@require_GET` with
+- All views now accept `HEAD` requests: replaced `@require_GET` with
   `@require_http_methods(["GET", "HEAD"])` on all 8 view functions.
   `HEAD` is required by the HTTP spec wherever `GET` is accepted, and
   monitoring tools and crawlers commonly use it.
@@ -124,7 +124,7 @@
 
 ### Fixed
 
-- `RedirectRuleAdmin` — added `list_display_links` to fix Django admin check
+- `RedirectRuleAdmin`: added `list_display_links` to fix Django admin check
   error when `priority` is both first in `list_display` and in `list_editable`
 - Ruff format and lint compliance for all new files
 
@@ -132,12 +132,12 @@
 
 ### Added
 
-- **Redirect and 410 management** — database-driven URL redirects with
+- **Redirect and 410 management**: database-driven URL redirects with
   `RedirectRule` model supporting exact, prefix, and regex matching, priority
   ordering, expiry, hit tracking, and multi-tenant scoping
-- **404 tracking** — `RedirectLog` model aggregates recurring 404 paths with
+- **404 tracking**: `RedirectLog` model aggregates recurring 404 paths with
   hit counts and top referrers for redirect intelligence
-- **RedirectMiddleware** — opt-in middleware (`ICV_SITEMAPS_REDIRECT_ENABLED`)
+- **RedirectMiddleware**: opt-in middleware (`ICV_SITEMAPS_REDIRECT_ENABLED`)
   evaluates redirect rules before URL resolution, serves 301/302/307/308/410
   responses, and tracks 404s with configurable sampling and ignore patterns
 - Redirect rule cache with signal-based invalidation (5-minute TTL)
@@ -147,7 +147,7 @@
   for cross-package integration (e.g. WAF, taxonomy move tracking)
 - `RedirectRuleAdmin` with priority, hit count, and status filtering;
   `RedirectLogAdmin` (read-only) with "Create 410 Gone" admin action
-- `icv_sitemaps_redirects` management command — list, import/export CSV,
+- `icv_sitemaps_redirects` management command: list, import/export CSV,
   prune expired rules, show top 404s
 - `cleanup_expired_redirects` and `cleanup_redirect_logs` Celery tasks
 - `RedirectRuleFactory` and `RedirectLogFactory` test factories
@@ -161,7 +161,7 @@
 
 ### Added
 
-- `Crawl-delay`, `Sitemap`, and `Host` directive choices for `RobotsRule` —
+- `Crawl-delay`, `Sitemap`, and `Host` directive choices for `RobotsRule`:
   these directives can now be stored in the database instead of requiring the
   `ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES` config fallback
 - `add_robots_rule()` service accepts all valid robots.txt directives; path
@@ -175,7 +175,7 @@
 
 ### Fixed
 
-- **Sitemap generation drops connection on large querysets** — replaced single
+- **Sitemap generation drops connection on large querysets**: replaced single
   `queryset.iterator()` with keyset pagination (`pk__gt` batching) and
   `close_old_connections()` between chunks. The old approach held a single
   server-side cursor across millions of rows, which managed Postgres providers
@@ -186,7 +186,7 @@
 
 ### Fixed
 
-- `SitemapSection.settings` JSONField now has `blank=True` — fixes admin form
+- `SitemapSection.settings` JSONField now has `blank=True`: fixes admin form
   validation error when saving a section with an empty `{}` settings field
 - Added migration `0002` for `settings` (`blank=True`) and `model_path`
   (help_text updated to `app_label.ModelName` format)
@@ -196,7 +196,7 @@
 ### Changed
 
 - **BREAKING:** `ICV_SITEMAPS_PING_ENABLED` now defaults to `False` and
-  `ICV_SITEMAPS_PING_ENGINES` defaults to `[]` — Google and Bing have retired
+  `ICV_SITEMAPS_PING_ENGINES` defaults to `[]`; Google and Bing have retired
   their sitemap ping endpoints. Projects that still need pinging must opt in
   explicitly.
 
@@ -210,7 +210,7 @@
 
 ### Security
 
-- `_resolve_model()` now uses `apps.get_model()` exclusively — removed
+- `_resolve_model()` now uses `apps.get_model()` exclusively; removed
   `import_string()` fallback that allowed arbitrary module imports
 - File size check before reading sitemap files in views (prevents memory
   exhaustion on oversized files)
@@ -222,7 +222,7 @@
 ### Added
 
 - Conditional ping based on SHA-256 checksum comparison of sitemap index
-- Empty section handling — writes valid empty `<urlset>` XML
+- Empty section handling: writes valid empty `<urlset>` XML
 - `delete_with_files` admin action for bulk section deletion with storage cleanup
 - Image, video, and news sitemap XML generation tests (21 new tests)
 - Management command tests (36 new tests)
@@ -242,13 +242,13 @@
 ### Removed
 
 - Dead `ICV_SITEMAPS_STREAMING_THRESHOLD` setting
-- `httpx` dependency (was unused — pinging uses `urllib.request`)
+- `httpx` dependency (was unused; pinging uses `urllib.request`)
 
 ## [0.1.2] - 2026-03-24
 
 ### Added
 
-- Initial database migration (`0001_initial`) — previously missing from the
+- Initial database migration (`0001_initial`): previously missing from the
   package, causing `makemigrations` to detect unapplied model changes in
   consuming projects
 

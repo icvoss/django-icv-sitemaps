@@ -43,7 +43,7 @@ publishing. There is no separate "publish" step and no undo.**
 
 ## Tag format (strict)
 
-`v<semver>` — a literal `v` followed by the version number.
+`v<semver>`: a literal `v` followed by the version number.
 
 Examples: `v0.7.0`, `v1.0.0`, `v1.2.3`.
 
