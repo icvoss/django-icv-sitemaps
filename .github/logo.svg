@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="django-icv-sitemaps mark">
+  <!-- Site map: root and children -->
+  <rect x="22" y="8" width="20" height="8" rx="1.5" fill="#12241B"/>
+  <path d="M32 16 v10 M16 34 v-8 h32 v8" fill="none" stroke="#12241B" stroke-width="3"/>
+  <rect x="6" y="34" width="20" height="8" rx="1.5" fill="#12241B" opacity="0.55"/>
+  <rect x="38" y="34" width="20" height="8" rx="1.5" fill="#E8501A"/>
+  <rect x="6" y="48" width="20" height="8" rx="1.5" fill="#12241B" opacity="0.3"/>
+  <rect x="38" y="48" width="20" height="8" rx="1.5" fill="#12241B" opacity="0.55"/>
+</svg>
