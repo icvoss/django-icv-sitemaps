@@ -270,6 +270,87 @@ class BreakingStory(SitemapMixin, models.Model):
 
 ---
 
+## Discovery contract: the mixin is a convenience, not a requirement
+
+`SitemapMixin` is the fastest way to make a model sitemap-includable, but it
+is optional. Sitemap generation has two requirements, both read via
+duck-typed `getattr()`, never by checking for the mixin:
+
+1. The model is registered in `ICV_SITEMAPS_AUTO_SECTIONS` (see above).
+2. The instance provides the `get_sitemap_*()` methods that
+   `_extract_entry()` reads, plus a `get_sitemap_queryset()` classmethod that
+   `generate_section()` calls to enumerate rows.
+
+| Method | Required? | Read as | Default when absent |
+|---|---|---|---|
+| `get_sitemap_url()` | Yes | called directly | none: raises, entry is skipped |
+| `get_sitemap_lastmod()` | No | `getattr(instance, ..., lambda: None)()` | `None` (omits `<lastmod>`) |
+| `get_sitemap_changefreq()` | No | `getattr(instance, ..., lambda: "daily")()` | `"daily"` |
+| `get_sitemap_priority()` | No | `getattr(instance, ..., lambda: 0.5)()` | `0.5` |
+| `get_sitemap_images()` | Only for `sitemap_type="image"` | `getattr(instance, ..., list)()` | `[]` |
+| `get_sitemap_video()` | Only for `sitemap_type="video"` | `getattr(instance, ..., lambda: None)()` | `None` |
+| `get_sitemap_news()` | Only for `sitemap_type="news"` | `getattr(instance, ..., lambda: None)()` | `None` |
+| `get_sitemap_queryset()` (classmethod) | No | `try`/`except AttributeError` | falls back to `model_class.objects.all()` |
+
+None of these checks test for `SitemapMixin`. Any object providing the
+methods it needs for its `sitemap_type` works, with no inheritance from an
+icv-sitemaps base class required. `SitemapMixin.get_sitemap_url()` itself
+just delegates to your model's own `get_absolute_url()`, which is the usual
+Django convention, so most models need no override at all.
+
+This follows [ADR-025](https://github.com/icvoss/oss/blob/main/docs/adrs/ADR-025-ecosystem-responsibility-map.md)
+principle 2 (discovery is pull-based, by protocol): a package that enumerates
+objects owned elsewhere must accept any object satisfying the documented
+protocol, never require a mixin. Content packages that want sitemap coverage
+(a CMS page model, for example) are never obliged to know `icv_sitemaps`
+exists beyond implementing these methods.
+
+A model implementing the protocol directly, without `SitemapMixin`:
+
+```python
+# blog/models.py
+from django.db import models
+
+class Article(models.Model):
+    title = models.CharField(max_length=200)
+    slug = models.SlugField(unique=True)
+    is_published = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def get_absolute_url(self) -> str:
+        return f"/articles/{self.slug}/"
+
+    def get_sitemap_url(self) -> str:
+        return self.get_absolute_url()
+
+    def get_sitemap_lastmod(self):
+        return self.updated_at
+
+    def get_sitemap_changefreq(self) -> str:
+        return "weekly"
+
+    def get_sitemap_priority(self) -> float:
+        return 0.7
+
+    @classmethod
+    def get_sitemap_queryset(cls):
+        return cls.objects.filter(is_published=True)
+```
+
+```python
+# settings.py
+ICV_SITEMAPS_AUTO_SECTIONS = {
+    "articles": {"model": "blog.Article", "sitemap_type": "standard"},
+}
+```
+
+That is the whole contract for a standard sitemap. `SitemapMixin` exists
+because most models want the same class-attribute-to-method mapping (and the
+image/video/news field wiring); reach for it when that saves you writing
+boilerplate, skip it when you would rather implement the methods directly.
+
+---
+
 ## Discovery Files
 
 ### robots.txt
