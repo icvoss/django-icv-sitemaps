@@ -44,16 +44,7 @@ def _read_storage_file(storage_path: str) -> str:
         return fh.read().decode("utf-8")
 
 
-def marketing_urls():
-    """Dummy url_provider callable used by tests below."""
-    return [
-        {"loc": "/pricing/", "changefreq": "weekly", "priority": 0.8},
-        {"loc": "/about/"},
-    ]
-
-
-def marketing_urls_single():
-    return [{"loc": "/callable-page/"}]
+from tests.test_url_providers import marketing_urls, marketing_urls_single
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +121,7 @@ class TestStaticSectionUrlProvider:
 
         section = StaticSitemapSectionFactory(
             name="marketing-callable",
-            settings={"url_provider": "tests.test_static_sections.marketing_urls"},
+            settings={"url_provider": "tests.test_url_providers.marketing_urls"},
         )
 
         with _apply_conf_patches():
@@ -150,13 +141,13 @@ class TestStaticSectionUrlProvider:
 
         section = StaticSitemapSectionFactory(
             name="marketing-callable-once",
-            settings={"url_provider": "tests.test_static_sections.marketing_urls_single"},
+            settings={"url_provider": "tests.test_url_providers.marketing_urls_single"},
         )
 
         with (
             _apply_conf_patches(),
             patch(
-                "tests.test_static_sections.marketing_urls_single",
+                "tests.test_url_providers.marketing_urls_single",
                 wraps=marketing_urls_single,
             ) as mock_provider,
         ):
@@ -177,7 +168,7 @@ class TestStaticSectionPrecedence:
         section = StaticSitemapSectionFactory(
             name="marketing-precedence",
             settings={
-                "url_provider": "tests.test_static_sections.marketing_urls_single",
+                "url_provider": "tests.test_url_providers.marketing_urls_single",
                 "urls": [{"loc": "/should-not-appear/"}],
             },
         )
@@ -414,7 +405,7 @@ class TestStaticSectionNonStandardTypes:
                         "news": {
                             "publication_name": "Example Press",
                             "language": "en",
-                            "publication_date": timezone.now(),
+                            "publication_date": timezone.now().isoformat(),
                             "title": "Big Announcement",
                         },
                     }
@@ -451,11 +442,11 @@ class TestCreateSectionStatic:
     def test_create_section_with_url_provider_produces_static_section(self, db):
         section = create_section(
             "marketing-pages",
-            url_provider="tests.test_static_sections.marketing_urls",
+            url_provider="tests.test_url_providers.marketing_urls",
         )
 
         assert section.section_type == "static"
-        assert section.settings["url_provider"] == "tests.test_static_sections.marketing_urls"
+        assert section.settings["url_provider"] == "tests.test_url_providers.marketing_urls"
 
     def test_create_section_rejects_model_and_urls_together(self, db):
         from sitemaps_testapp.models import Article

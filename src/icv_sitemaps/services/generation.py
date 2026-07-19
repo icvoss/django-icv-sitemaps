@@ -508,7 +508,7 @@ def _iter_static_entries(
     raw_entries: list
 
     if url_provider:
-        provider = import_string(url_provider.replace(":", "."))
+        provider = import_string(url_provider)
         raw_entries = list(provider())
     else:
         raw_entries = list(section_settings.get("urls") or [])
