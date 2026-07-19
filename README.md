@@ -270,6 +270,78 @@ class BreakingStory(SitemapMixin, models.Model):
 
 ---
 
+## Static Sections: URLs without a model
+
+Every section above resolves a Django model. Sites also have pages with no
+model behind them: the homepage, a pricing page, marketing landing pages.
+A `section_type="static"` section covers exactly this, sourcing its URLs
+from a declared list or a callable instead of a queryset.
+
+```python
+ICV_SITEMAPS_AUTO_SECTIONS = {
+    "marketing-pages": {
+        "section_type": "static",
+        "sitemap_type": "standard",
+        "changefreq": "weekly",
+        "priority": "0.7",
+        "settings": {"url_provider": "myapp.sitemaps:marketing_urls"},
+    },
+}
+```
+
+```python
+# myapp/sitemaps.py
+def marketing_urls():
+    """Return an iterable of sitemap entry dicts for pages with no model."""
+    return [
+        {"loc": "/", "changefreq": "daily", "priority": 1.0},
+        {"loc": "/pricing/", "changefreq": "weekly", "priority": 0.8},
+        {"loc": "/about/"},
+    ]
+```
+
+Two ways to declare a static section's URLs, read from the section's
+`settings` JSONField:
+
+| Key | Type | Description |
+|-----|------|--------------|
+| `url_provider` | `str` | Dotted path (`"module.path:function"` or `"module.path.function"`) to a no-argument callable returning an iterable of entry dicts. Takes precedence over `urls` when both are present. |
+| `urls` | `list[dict]` | An inline list of entry dicts, for a URL set that doesn't need a callable. |
+
+Each entry dict is the same shape a model section produces internally:
+`{"loc": str, "lastmod": ..., "changefreq": ..., "priority": ..., "images"/"video"/"news": ...}`.
+Only `loc` is required.
+
+```python
+from icv_sitemaps.services import create_section
+
+create_section(
+    "marketing-pages",
+    url_provider="myapp.sitemaps.marketing_urls",
+)
+
+# or an inline list, no callable needed
+create_section(
+    "legal-pages",
+    urls=[{"loc": "/terms/"}, {"loc": "/privacy/"}],
+)
+```
+
+**The callable owns host and locale concerns.** Generation often runs as a
+background Celery task, outside any request context, so `url_provider` must
+build fully-qualified or base-relative URLs itself: it cannot rely on the
+current request's host or the active locale. For a multi-host or
+multi-locale site, reverse routes explicitly (e.g. pass `urlconf=...` to
+`django.urls.reverse` and wrap in `translation.override(...)`).
+
+**Static sections do not go stale automatically.** They have no model, so
+`post_save`/`post_delete` never fires for them; `connect_auto_section_signals()`
+skips them silently. Their content changes on deploy, not on data writes, so
+call `mark_section_stale("marketing-pages")` from your deploy pipeline, or
+rely on the periodic `regenerate_all_sitemaps` task to pick them up.
+
+---
+
 ## Discovery contract: the mixin is a convenience, not a requirement
 
 `SitemapMixin` is the fastest way to make a model sitemap-includable, but it
@@ -540,12 +612,15 @@ configuration dict:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | `str` | required | `"app_label.ModelName"` |
+| `section_type` | `str` | `"model"` | `"model"` or `"static"`. A `"static"` section reads `settings.url_provider`/`settings.urls` instead of `model` |
+| `model` | `str` | required for `"model"` | `"app_label.ModelName"`. Not used for `"static"` sections |
 | `sitemap_type` | `str` | `"standard"` | `standard`, `image`, `video`, or `news` |
 | `changefreq` | `str` | `"daily"` | Default change frequency |
 | `priority` | `float` | `0.5` | Default priority (0.0--1.0) |
-| `on_save` | `bool` | `True` | Mark section stale on model save |
-| `on_delete` | `bool` | `True` | Mark section stale on model delete |
+| `on_save` | `bool` | `True` | Mark section stale on model save. No-op for `"static"` sections (no model to hang the signal on) |
+| `on_delete` | `bool` | `True` | Mark section stale on model delete. No-op for `"static"` sections |
+| `settings.url_provider` | `str` | none | `"static"` sections only: dotted path to a no-argument callable returning entry dicts. Takes precedence over `settings.urls` |
+| `settings.urls` | `list[dict]` | none | `"static"` sections only: inline list of entry dicts |
 
 ---
 
@@ -673,6 +748,7 @@ The package provides testing utilities for consuming projects:
 ```python
 from icv_sitemaps.testing import (
     SitemapSectionFactory,
+    StaticSitemapSectionFactory,
     SitemapFileFactory,
     SitemapGenerationLogFactory,
     RobotsRuleFactory,

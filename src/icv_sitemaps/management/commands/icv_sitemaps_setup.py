@@ -108,21 +108,28 @@ class Command(BaseCommand):
         errors = 0
 
         for name, config in auto_sections.items():
-            model_path = config.get("model", config.get("model_path", ""))
+            section_type = config.get("section_type", "model")
             tenant_id = config.get("tenant_id", "")
             sitemap_type = config.get("sitemap_type", "standard")
             changefreq = config.get("changefreq", "daily")
             priority = config.get("priority", "0.5")
             section_settings = config.get("settings", {})
 
-            # Resolve model class to validate the path
-            try:
-                app_label, model_name = model_path.rsplit(".", 1)
-                apps.get_model(app_label, model_name)
-            except (ValueError, LookupError) as exc:
-                self.stdout.write(self.style.ERROR(f"  [{name}] Cannot resolve model '{model_path}': {exc}"))
-                errors += 1
-                continue
+            model_path = ""
+            if section_type == "static":
+                # Static sections declare their URLs in settings["urls"] or
+                # settings["url_provider"] — no model to resolve.
+                pass
+            else:
+                model_path = config.get("model", config.get("model_path", ""))
+                # Resolve model class to validate the path
+                try:
+                    app_label, model_name = model_path.rsplit(".", 1)
+                    apps.get_model(app_label, model_name)
+                except (ValueError, LookupError) as exc:
+                    self.stdout.write(self.style.ERROR(f"  [{name}] Cannot resolve model '{model_path}': {exc}"))
+                    errors += 1
+                    continue
 
             # Check existence
             if SitemapSection.objects.filter(name=name, tenant_id=tenant_id).exists():
@@ -131,7 +138,12 @@ class Command(BaseCommand):
                 continue
 
             if dry_run:
-                self.stdout.write(f"  [{name}] Would create SitemapSection (model={model_path}, type={sitemap_type})")
+                if section_type == "static":
+                    self.stdout.write(f"  [{name}] Would create SitemapSection (static, type={sitemap_type})")
+                else:
+                    self.stdout.write(
+                        f"  [{name}] Would create SitemapSection (model={model_path}, type={sitemap_type})"
+                    )
                 created += 1
                 continue
 
@@ -139,13 +151,19 @@ class Command(BaseCommand):
                 SitemapSection.objects.create(
                     name=name,
                     tenant_id=tenant_id,
+                    section_type=section_type,
                     model_path=model_path,
                     sitemap_type=sitemap_type,
                     changefreq=changefreq,
                     priority=priority,
                     settings=section_settings,
                 )
-                self.stdout.write(self.style.SUCCESS(f"  [{name}] Created (model={model_path}, type={sitemap_type})"))
+                if section_type == "static":
+                    self.stdout.write(self.style.SUCCESS(f"  [{name}] Created (static, type={sitemap_type})"))
+                else:
+                    self.stdout.write(
+                        self.style.SUCCESS(f"  [{name}] Created (model={model_path}, type={sitemap_type})")
+                    )
                 created += 1
             except Exception as exc:
                 self.stdout.write(self.style.ERROR(f"  [{name}] Failed to create: {exc}"))

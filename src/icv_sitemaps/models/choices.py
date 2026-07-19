@@ -7,6 +7,11 @@ SITEMAP_TYPE_CHOICES = [
     ("news", "News"),
 ]
 
+SECTION_TYPE_CHOICES = [
+    ("model", "Model"),
+    ("static", "Static"),
+]
+
 CHANGEFREQ_CHOICES = [
     ("always", "Always"),
     ("hourly", "Hourly"),
@@ -73,6 +78,7 @@ REDIRECT_SOURCE_CHOICES = [
 
 __all__ = [
     "SITEMAP_TYPE_CHOICES",
+    "SECTION_TYPE_CHOICES",
     "CHANGEFREQ_CHOICES",
     "DIRECTIVE_CHOICES",
     "RELATIONSHIP_CHOICES",

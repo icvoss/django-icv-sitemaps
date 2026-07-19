@@ -12,6 +12,7 @@ Django app registry access before ``django.setup()`` has been called.
 
 __all__ = [
     "SitemapSectionFactory",
+    "StaticSitemapSectionFactory",
     "SitemapFileFactory",
     "SitemapGenerationLogFactory",
     "RobotsRuleFactory",

@@ -448,6 +448,75 @@ def _write_buffered_to_storage(
 # ---------------------------------------------------------------------------
 
 
+def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict:
+    """Normalise a raw static-section entry into the shared entry-dict contract.
+
+    *raw* is whatever the consumer declared in ``settings["urls"]`` or
+    returned from ``settings["url_provider"]``: a dict with at least
+    ``"loc"`` and, optionally, ``"lastmod"``, ``"changefreq"``, ``"priority"``,
+    and ``"images"``/``"video"``/``"news"`` for the non-standard sitemap types.
+    """
+    raw_url = raw["loc"]
+    loc = _absolute_url(raw_url) if base_url else raw_url
+
+    lastmod_val = raw.get("lastmod")
+    lastmod = lastmod_val if isinstance(lastmod_val, str) else _format_lastmod(lastmod_val)
+
+    entry: dict = {
+        "loc": loc,
+        "lastmod": lastmod,
+        "changefreq": raw.get("changefreq", "daily"),
+        "priority": raw.get("priority", 0.5),
+    }
+
+    if sitemap_type == "image":
+        entry["images"] = raw.get("images") or []
+    elif sitemap_type == "video":
+        entry["video"] = raw.get("video")
+    elif sitemap_type == "news":
+        entry["news"] = raw.get("news")
+
+    return entry
+
+
+def _iter_static_entries(
+    *,
+    section,
+    sitemap_type: str,
+    base_url_setting: str,
+):
+    """Yield entry dicts for a ``section_type="static"`` section.
+
+    Reads the URL source from ``section.settings``:
+
+    - ``url_provider``: a dotted path (``"module.path:function"`` or
+      ``"module.path.function"``) resolved via
+      :func:`django.utils.module_loading.import_string` and called with no
+      arguments. Must return an iterable of entry dicts.
+    - ``urls``: an inline list of entry dicts.
+
+    When both are present, ``url_provider`` takes precedence: a callable is
+    the live source, the inline list is the static fallback.
+
+    The callable/list runs outside any request context (generation is often
+    a background Celery task), so it is responsible for producing
+    fully-qualified or base-relative URLs itself and must not rely on
+    request-scoped state such as the current host or locale.
+    """
+    section_settings = section.settings or {}
+    url_provider = section_settings.get("url_provider")
+    raw_entries: list
+
+    if url_provider:
+        provider = import_string(url_provider.replace(":", "."))
+        raw_entries = list(provider())
+    else:
+        raw_entries = list(section_settings.get("urls") or [])
+
+    for raw in raw_entries:
+        yield _normalise_static_entry(raw, sitemap_type, base_url_setting)
+
+
 def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
     """Extract a sitemap entry dict from a model instance."""
     try:
@@ -538,27 +607,45 @@ def generate_section(
         status="running",
     )
 
-    try:
-        model_class = _resolve_model(section.model_path)
-    except (ValueError, LookupError, ImportError) as exc:
-        logger.exception("generate_section: cannot resolve model %r", section.model_path)
-        log.status = "failed"
-        log.detail = str(exc)
-        log.save(update_fields=["status", "detail"])
-        return 0
-
-    try:
-        queryset = model_class.get_sitemap_queryset()
-    except AttributeError:
-        queryset = model_class.objects.all()
-
-    # News max-age cutoff (BR-015).
-    if section.sitemap_type == "news":
-        cutoff = django_timezone.now() - django_timezone.timedelta(days=ICV_SITEMAPS_NEWS_MAX_AGE_DAYS)
-
     storage = _get_storage()
     base_url_setting = _get_base_url()
     sitemap_type = section.sitemap_type
+
+    if section.section_type == "static":
+        entries = _iter_static_entries(
+            section=section,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+        )
+    else:
+        try:
+            model_class = _resolve_model(section.model_path)
+        except (ValueError, LookupError, ImportError) as exc:
+            logger.exception("generate_section: cannot resolve model %r", section.model_path)
+            log.status = "failed"
+            log.detail = str(exc)
+            log.save(update_fields=["status", "detail"])
+            return 0
+
+        try:
+            queryset = model_class.get_sitemap_queryset()
+        except AttributeError:
+            queryset = model_class.objects.all()
+
+        # News max-age cutoff (BR-015).
+        cutoff = None
+        if sitemap_type == "news":
+            cutoff = django_timezone.now() - django_timezone.timedelta(days=ICV_SITEMAPS_NEWS_MAX_AGE_DAYS)
+
+        entries = _iter_section_entries(
+            queryset=queryset,
+            section=section,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+            cutoff=cutoff,
+            model_class=model_class,
+            batch_size=ICV_SITEMAPS_BATCH_SIZE,
+        )
 
     # Track previously generated files for cleanup (BR-029).
     old_paths = set(section.files.values_list("storage_path", flat=True))
@@ -572,14 +659,10 @@ def generate_section(
             total_urls, new_files = _generate_streaming(
                 section=section,
                 tenant_id=tenant_id,
-                queryset=queryset,
+                entries=entries,
                 sitemap_type=sitemap_type,
-                base_url_setting=base_url_setting,
-                cutoff=cutoff if section.sitemap_type == "news" else None,
-                model_class=model_class,
                 storage=storage,
                 gzip_enabled=ICV_SITEMAPS_GZIP,
-                batch_size=ICV_SITEMAPS_BATCH_SIZE,
                 max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
                 max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
             )
@@ -587,14 +670,10 @@ def generate_section(
             total_urls, new_files = _generate_buffered(
                 section=section,
                 tenant_id=tenant_id,
-                queryset=queryset,
+                entries=entries,
                 sitemap_type=sitemap_type,
-                base_url_setting=base_url_setting,
-                cutoff=cutoff if section.sitemap_type == "news" else None,
-                model_class=model_class,
                 storage=storage,
                 gzip_enabled=ICV_SITEMAPS_GZIP,
-                batch_size=ICV_SITEMAPS_BATCH_SIZE,
                 max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
                 max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
             )
@@ -790,33 +869,28 @@ def _generate_streaming(
     *,
     section,
     tenant_id: str,
-    queryset,
+    entries,
     sitemap_type: str,
-    base_url_setting: str,
-    cutoff,
-    model_class,
     storage,
     gzip_enabled: bool,
-    batch_size: int,
     max_urls: int,
     max_bytes: int,
 ) -> tuple[int, list[dict]]:
-    """Stream entries directly to per-shard temp files, then upload each."""
+    """Stream entries directly to per-shard temp files, then upload each.
+
+    *entries* is any iterable of the entry-dict contract (see
+    :func:`_extract_entry` / :func:`_normalise_static_entry`), produced by
+    either a model queryset (:func:`_iter_section_entries`) or a static
+    URL source (:func:`_iter_static_entries`). This function is agnostic to
+    where entries come from.
+    """
     new_files: list[dict] = []
     file_sequence = 0
     total_urls = 0
 
     writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
     try:
-        for entry in _iter_section_entries(
-            queryset=queryset,
-            section=section,
-            sitemap_type=sitemap_type,
-            base_url_setting=base_url_setting,
-            cutoff=cutoff,
-            model_class=model_class,
-            batch_size=batch_size,
-        ):
+        for entry in entries:
             if writer.url_count >= max_urls or (
                 writer.url_count > 0 and writer.estimated_size_after(entry) > max_bytes
             ):
@@ -902,18 +976,18 @@ def _generate_buffered(
     *,
     section,
     tenant_id: str,
-    queryset,
+    entries,
     sitemap_type: str,
-    base_url_setting: str,
-    cutoff,
-    model_class,
     storage,
     gzip_enabled: bool,
-    batch_size: int,
     max_urls: int,
     max_bytes: int,
 ) -> tuple[int, list[dict]]:
-    """Legacy buffered code path (ICV_SITEMAPS_STREAMING_WRITER=False)."""
+    """Legacy buffered code path (ICV_SITEMAPS_STREAMING_WRITER=False).
+
+    *entries* is any iterable of the entry-dict contract; see
+    :func:`_generate_streaming` for the same convention.
+    """
     new_files: list[dict] = []
     file_sequence = 0
     total_urls = 0
@@ -942,15 +1016,7 @@ def _generate_buffered(
         current_entries = []
         current_size = 0
 
-    for entry in _iter_section_entries(
-        queryset=queryset,
-        section=section,
-        sitemap_type=sitemap_type,
-        base_url_setting=base_url_setting,
-        cutoff=cutoff,
-        model_class=model_class,
-        batch_size=batch_size,
-    ):
+    for entry in entries:
         entry_size_estimate = len(entry.get("loc", "")) + 200
         if current_entries and (len(current_entries) >= max_urls or current_size + entry_size_estimate > max_bytes):
             _flush()
