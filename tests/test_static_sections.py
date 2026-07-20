@@ -13,6 +13,7 @@ from django.core.exceptions import ValidationError
 
 from icv_sitemaps.auto_sections import _connected_signals, connect_auto_section_signals, disconnect_auto_section_signals
 from icv_sitemaps.models import SitemapFile, SitemapSection
+from tests.test_url_providers import marketing_urls_single
 from icv_sitemaps.services import create_section, generate_index, generate_section
 from icv_sitemaps.testing.factories import StaticSitemapSectionFactory
 
@@ -42,9 +43,6 @@ def _read_storage_file(storage_path: str) -> str:
 
     with default_storage.open(storage_path, "rb") as fh:
         return fh.read().decode("utf-8")
-
-
-from tests.test_url_providers import marketing_urls, marketing_urls_single
 
 
 # ---------------------------------------------------------------------------
