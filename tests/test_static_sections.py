@@ -13,9 +13,9 @@ from django.core.exceptions import ValidationError
 
 from icv_sitemaps.auto_sections import _connected_signals, connect_auto_section_signals, disconnect_auto_section_signals
 from icv_sitemaps.models import SitemapFile, SitemapSection
-from tests.test_url_providers import marketing_urls_single
 from icv_sitemaps.services import create_section, generate_index, generate_section
 from icv_sitemaps.testing.factories import StaticSitemapSectionFactory
+from tests.test_url_providers import marketing_urls_single
 
 _CONF_PATCHES = {
     "ICV_SITEMAPS_GZIP": False,
