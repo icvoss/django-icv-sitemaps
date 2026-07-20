@@ -1,5 +1,6 @@
 """Sitemap section, file, and generation-log models."""
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -8,6 +9,7 @@ from icv_sitemaps.models.choices import (
     CHANGEFREQ_CHOICES,
     GENERATION_ACTION_CHOICES,
     GENERATION_STATUS_CHOICES,
+    SECTION_TYPE_CHOICES,
     SITEMAP_TYPE_CHOICES,
 )
 
@@ -30,9 +32,23 @@ class SitemapSection(BaseModel):
         db_index=True,
         help_text=_("Tenant identifier for multi-tenant setups. Leave blank for single-tenant use."),
     )
+    section_type = models.CharField(
+        max_length=10,
+        choices=SECTION_TYPE_CHOICES,
+        default="model",
+        help_text=_(
+            'Where this section\'s URLs come from: "model" (a Django queryset) or '
+            '"static" (a declared list or callable in `settings`).'
+        ),
+    )
     model_path = models.CharField(
         max_length=500,
-        help_text=_('Django model in "app_label.ModelName" format, e.g. "catalog.Product".'),
+        default="",
+        blank=True,
+        help_text=_(
+            'Django model in "app_label.ModelName" format, e.g. "catalog.Product". '
+            'Required when section_type is "model"; left blank for "static" sections.'
+        ),
     )
     sitemap_type = models.CharField(
         max_length=20,
@@ -101,6 +117,13 @@ class SitemapSection(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.sitemap_type})"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.section_type == "model" and not self.model_path:
+            raise ValidationError({"model_path": _('model_path is required when section_type is "model".')})
+        if self.section_type == "static" and self.model_path:
+            raise ValidationError({"model_path": _('model_path must be blank when section_type is "static".')})
 
 
 class SitemapFile(BaseModel):

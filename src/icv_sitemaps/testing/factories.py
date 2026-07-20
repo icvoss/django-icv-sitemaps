@@ -23,6 +23,31 @@ class SitemapSectionFactory(factory.django.DjangoModelFactory):
         model = "icv_sitemaps.SitemapSection"
 
 
+class StaticSitemapSectionFactory(factory.django.DjangoModelFactory):
+    """Factory for a ``section_type="static"`` SitemapSection.
+
+    URLs come from an inline ``settings["urls"]`` list rather than a model
+    queryset. Override ``settings`` to supply a ``url_provider`` dotted path
+    instead when testing the callable source.
+    """
+
+    name = factory.Sequence(lambda n: f"static-section-{n}")
+    tenant_id = ""
+    section_type = "static"
+    model_path = ""
+    sitemap_type = "standard"
+    changefreq = "daily"
+    priority = "0.5"
+    is_active = True
+    is_stale = True
+    url_count = 0
+    file_count = 0
+    settings = factory.LazyFunction(lambda: {"urls": [{"loc": "/static-page/"}]})
+
+    class Meta:
+        model = "icv_sitemaps.SitemapSection"
+
+
 class SitemapFileFactory(factory.django.DjangoModelFactory):
     """Factory for SitemapFile."""
 

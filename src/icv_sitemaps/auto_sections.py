@@ -150,6 +150,12 @@ def connect_auto_section_signals() -> None:
         return
 
     for section_name, section_config in config.items():
+        # Static sections have no model to hang post_save/post_delete
+        # signals on — their URLs change on deploy, not on data writes.
+        # Skip silently; this is not a misconfiguration.
+        if section_config.get("section_type") == "static":
+            continue
+
         model_path = section_config.get("model")
         if not model_path:
             logger.warning(

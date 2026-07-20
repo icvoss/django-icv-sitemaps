@@ -11,6 +11,8 @@ def create_section(
     name: str,
     *,
     model_class=None,
+    urls: list[dict] | None = None,
+    url_provider: str = "",
     sitemap_type: str = "standard",
     tenant_id: str = "",
     **kwargs,
@@ -19,11 +21,20 @@ def create_section(
 
     If *model_class* is provided and uses ``SitemapMixin``, its class-level
     attributes seed the section configuration before *kwargs* are applied.
+    This produces a ``section_type="model"`` section.
+
+    If *urls* or *url_provider* is provided instead, this produces a
+    ``section_type="static"`` section whose entries come from the declared
+    list or callable rather than a Django queryset. *model_class* and
+    *urls*/*url_provider* are mutually exclusive.
 
     Returns the created ``SitemapSection`` instance.
     """
     from icv_sitemaps.mixins import SitemapMixin
     from icv_sitemaps.models.sections import SitemapSection
+
+    if model_class is not None and (urls is not None or url_provider):
+        raise ValueError("create_section: model_class and urls/url_provider are mutually exclusive.")
 
     # Seed defaults from SitemapMixin attributes when available.
     defaults: dict = {
@@ -31,7 +42,15 @@ def create_section(
         "tenant_id": tenant_id,
     }
 
-    if model_class is not None:
+    if urls is not None or url_provider:
+        defaults["section_type"] = "static"
+        section_settings: dict = dict(kwargs.pop("settings", {}) or {})
+        if url_provider:
+            section_settings["url_provider"] = url_provider
+        if urls is not None:
+            section_settings["urls"] = urls
+        defaults["settings"] = section_settings
+    elif model_class is not None:
         defaults["model_path"] = f"{model_class._meta.app_label}.{model_class.__name__}"
 
         if isinstance(model_class, type) and issubclass(model_class, SitemapMixin):

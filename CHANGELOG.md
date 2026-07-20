@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.8.0] - 2026-07-19
+
+### Added
+
+- Static-URL section type (#2): `SitemapSection.section_type` (`model` or
+  `static`, default `model`). A `static` section sources its `<loc>` URLs
+  from `settings["url_provider"]` (a dotted path to a no-argument callable
+  returning entry dicts, resolved via `import_string`) or an inline
+  `settings["urls"]` list, rather than a Django queryset. `url_provider`
+  takes precedence when both are present. Covers pages with no model
+  behind them (homepage, pricing, marketing landing pages).
+- `create_section()` accepts `urls` and `url_provider` keyword arguments to
+  create a static section programmatically; mutually exclusive with
+  `model_class`.
+- `ICV_SITEMAPS_AUTO_SECTIONS` entries accept `"section_type": "static"`
+  with no `model` key; `icv_sitemaps_setup` creates these without
+  resolving a model, and `connect_auto_section_signals()` skips them
+  silently (a static section has no model to hang `post_save`/
+  `post_delete` on).
+- `StaticSitemapSectionFactory` in `icv_sitemaps.testing`.
+
+### Changed
+
+- `SitemapSection.model_path` is now blank-by-default (`default=""`,
+  `blank=True`) instead of required, since static sections have no model
+  path. `SitemapSection.clean()` enforces the `section_type`/`model_path`
+  relationship: a `model` section requires `model_path`; a `static`
+  section forbids it.
+- `_generate_streaming`/`_generate_buffered` now take an entries iterable
+  directly rather than building it internally from a queryset, so both
+  model-backed and static sections reuse the same writer, sharding, gzip,
+  and index code unchanged.
+
 ## [0.7.0] - 2026-07-09
 
 ### Added

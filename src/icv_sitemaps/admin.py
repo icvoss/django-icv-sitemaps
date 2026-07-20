@@ -113,6 +113,7 @@ def generate_all(modeladmin, request, queryset):
 class SitemapSectionAdmin(admin.ModelAdmin):
     list_display = [
         "name",
+        "section_type",
         "sitemap_type",
         "is_active",
         "is_stale",
@@ -120,7 +121,7 @@ class SitemapSectionAdmin(admin.ModelAdmin):
         "file_count",
         "last_generated_at",
     ]
-    list_filter = ["sitemap_type", "is_active", "is_stale"]
+    list_filter = ["section_type", "sitemap_type", "is_active", "is_stale"]
     search_fields = ["name", "model_path"]
     readonly_fields = ["url_count", "file_count", "last_generated_at", "created_at", "updated_at"]
     actions = [mark_stale, regenerate_selected, generate_all, delete_with_files]
@@ -131,6 +132,7 @@ class SitemapSectionAdmin(admin.ModelAdmin):
                 "fields": [
                     "name",
                     "tenant_id",
+                    "section_type",
                     "model_path",
                     "sitemap_type",
                     "changefreq",
