@@ -302,6 +302,17 @@ class TestIcvSitemapsGenerateCommand:
         assert "No stale sections" in out.getvalue()
 
     def test_force_flag_regenerates_fresh_section(self, db, tmp_path, settings):
+        """Regression for #6: ``--all --force`` on a section that is already
+        ``is_stale=False`` must actually regenerate it, not just report success.
+
+        Before the fix, ``_run_generation()`` never forwarded ``force`` to the
+        ``generate_section()`` service call, so the service's own
+        ``if not force and not section.is_stale: return 0`` guard fired
+        regardless of what the command line asked for. The run still printed
+        "Generated: 1" (the command-level force check let the section into the
+        summary loop), so a log-text assertion alone cannot catch this: the
+        proof is that URLs and files were actually written.
+        """
         import icv_sitemaps.conf as conf_mod
 
         settings.MEDIA_ROOT = str(tmp_path)
@@ -309,20 +320,61 @@ class TestIcvSitemapsGenerateCommand:
         from sitemaps_testapp.models import Article
 
         Article.objects.create(title="T4", slug="t4-force", is_published=True)
-        SitemapSectionFactory(
+        section = SitemapSectionFactory(
             name="fresh-force",
             model_path="sitemaps_testapp.Article",
             sitemap_type="standard",
             is_stale=False,
+            url_count=0,
+            file_count=0,
         )
 
         out = StringIO()
         patches = self._make_conf_patches(conf_mod, tmp_path)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-            # --force together with explicit --all is the supported force mode
             call_command("icv_sitemaps_generate", "--all", "--force", stdout=out)
 
         assert "Generated" in out.getvalue()
+
+        section.refresh_from_db()
+        from icv_sitemaps.models import SitemapFile
+
+        assert section.url_count == 1
+        assert section.file_count >= 1
+        assert SitemapFile.objects.filter(section=section).exists()
+
+    def test_section_flag_with_force_regenerates_fresh_section(self, db, tmp_path, settings):
+        """Regression for #6: ``--section NAME --force`` on a fresh section must
+        actually regenerate it, matching the spec's own usage example
+        (``icv_sitemaps_generate --section products --force``).
+        """
+        import icv_sitemaps.conf as conf_mod
+
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from sitemaps_testapp.models import Article
+
+        Article.objects.create(title="T5", slug="t5-section-force", is_published=True)
+        section = SitemapSectionFactory(
+            name="fresh-section-force",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=False,
+            url_count=0,
+            file_count=0,
+        )
+
+        out = StringIO()
+        patches = self._make_conf_patches(conf_mod, tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            call_command("icv_sitemaps_generate", "--section", "fresh-section-force", "--force", stdout=out)
+
+        section.refresh_from_db()
+        from icv_sitemaps.models import SitemapFile
+
+        assert section.url_count == 1
+        assert section.file_count >= 1
+        assert SitemapFile.objects.filter(section=section).exists()
 
     def test_tenant_flag_scopes_section_lookup(self, db, tmp_path, settings):
         import icv_sitemaps.conf as conf_mod

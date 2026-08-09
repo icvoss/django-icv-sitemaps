@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `icv_sitemaps_generate` did not forward `--force` to the generation
+  service (#6). `_run_generation()` called `generate_section(section)`
+  without the `force` keyword, so `generate_section()`'s own staleness
+  guard fired regardless of what the command line asked for: a forced run
+  against a section that was already up to date printed a success summary
+  and regenerated nothing. Affected both `--section NAME --force` and
+  `--all --force` (the previously-published test covering `--force` only
+  asserted on log text, which the bug did not change, so it did not catch
+  this). `force` is now forwarded through `_generate_section()` to
+  `_run_generation()` to the service call.
+
 ## [0.8.0] - 2026-07-19
 
 ### Added
