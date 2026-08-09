@@ -364,18 +364,78 @@ def _cleanup_temp(path: str) -> None:
         pass
 
 
-def _upload_temp_to_storage(storage, temp_path: str, dest_path: str) -> tuple[str, int]:
-    """Upload a local temp file to *dest_path* atomically (BR-006).
+def _storage_overwrites_in_place(storage, path: str) -> bool:
+    """Return True when writing *path* on *storage* replaces existing content
+    in place, rather than being renamed aside to avoid a collision.
 
-    Writes to ``dest_path + ".tmp"`` first, then swaps to the final path.
+    Read-only probe: ``Storage.save()`` resolves the name to write via
+    ``get_available_name()``. A backend configured to overwrite (S3 with
+    ``AWS_S3_FILE_OVERWRITE=True``, ``FileSystemStorage(allow_overwrite=True)``,
+    or any backend that overrides ``get_available_name()`` to return the
+    requested name unchanged) returns *path* itself even when *path* already
+    exists. A backend that does not overwrite returns a different, suffixed
+    name instead. When *path* does not exist yet there is nothing to collide
+    with, so this reports True (a plain ``save()`` is safe either way).
+    """
+    if not storage.exists(path):
+        return True
+    return storage.get_available_name(path) == path
+
+
+def _replace_in_storage(storage, temp_path: str, dest_path: str) -> tuple[str, int]:
+    """Replace *dest_path* on *storage* with the contents of local file
+    *temp_path*, leaving the previous file at *dest_path* intact if the
+    replacement cannot be written (BR-006, issue #5).
+
+    A failed publish must never delete the last known-good sitemap before a
+    verified replacement exists. Generic Django ``Storage`` has no atomic
+    rename or move, so the strategy depends on what the backend actually
+    supports:
+
+    - **Overwrite-capable storage** (:func:`_storage_overwrites_in_place`
+      is True, e.g. S3 with ``AWS_S3_FILE_OVERWRITE=True`` or
+      ``FileSystemStorage(allow_overwrite=True)`): a single ``save(dest_path)``
+      is used. The upload either lands as the new *dest_path* or fails and
+      raises; there is no window where *dest_path* is absent, because it is
+      never deleted first.
+    - **Generic storage that renames on collision** (the common case,
+      including default ``FileSystemStorage``): there is no backend
+      primitive that replaces a file's content without first removing it.
+      The upload is written and verified at a versioned temporary path
+      (``dest_path + ".tmp"``) *before* touching *dest_path* at all, so a
+      failure during that upload (the failure this issue reports) never
+      deletes the previous file. Only once the temporary upload is
+      confirmed present does the old *dest_path* get deleted and the
+      verified content saved in its place. A failure in that final step
+      (after the delete, before the save) remains a real, narrow window
+      inherent to generic ``Storage``: this is not claimed to be fully
+      atomic on that path, only that the reported hazard (a failed upload
+      destroying the previous file) is closed.
+
     Returns ``(final_path, size_bytes)``.
     """
-    tmp_dest = dest_path + ".tmp"
+    if _storage_overwrites_in_place(storage, dest_path):
+        with open(temp_path, "rb") as fh:
+            storage.save(dest_path, File(fh))
+        size = os.path.getsize(temp_path)
+        return dest_path, size
 
+    tmp_dest = dest_path + ".tmp"
     if storage.exists(tmp_dest):
         storage.delete(tmp_dest)
     with open(temp_path, "rb") as fh:
         storage.save(tmp_dest, File(fh))
+
+    # Verify the staged upload actually landed before touching dest_path.
+    # A failure anywhere above this point leaves dest_path untouched.
+    expected_size = os.path.getsize(temp_path)
+    if not storage.exists(tmp_dest) or storage.size(tmp_dest) != expected_size:
+        from icv_sitemaps.exceptions import StorageError
+
+        raise StorageError(
+            f"Staged upload to {tmp_dest!r} did not land as expected; "
+            f"leaving the previous file at {dest_path!r} in place."
+        )
 
     if storage.exists(dest_path):
         storage.delete(dest_path)
@@ -385,8 +445,17 @@ def _upload_temp_to_storage(storage, temp_path: str, dest_path: str) -> tuple[st
     if storage.exists(tmp_dest):
         storage.delete(tmp_dest)
 
-    size = os.path.getsize(temp_path)
-    return dest_path, size
+    return dest_path, expected_size
+
+
+def _upload_temp_to_storage(storage, temp_path: str, dest_path: str) -> tuple[str, int]:
+    """Upload a local temp file to *dest_path*, replacing any previous
+    content without deleting it before a verified replacement exists
+    (BR-006). See :func:`_replace_in_storage` for the strategy.
+
+    Returns ``(final_path, size_bytes)``.
+    """
+    return _replace_in_storage(storage, temp_path, dest_path)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +487,13 @@ def _write_buffered_to_storage(
 ) -> tuple[str, int]:
     """Buffered-write fallback for non-streaming callers (e.g. the index).
 
-    Atomic write (BR-006): write to a temporary path, then swap.
+    Replaces *path* without deleting the previous content before a verified
+    replacement exists (BR-006, issue #5). Same strategy as
+    :func:`_replace_in_storage`, adapted for an in-memory payload rather
+    than a local temp file: an overwrite-capable backend gets a single
+    ``save()``; a generic backend stages to ``path + ".tmp"``, verifies the
+    staged size, and only then deletes and replaces *path*. A failure
+    while staging never touches the previous file.
     """
     if gzip_enabled:
         buf = io.BytesIO()
@@ -428,10 +503,22 @@ def _write_buffered_to_storage(
         if not path.endswith(".gz"):
             path = path + ".gz"
 
+    if _storage_overwrites_in_place(storage, path):
+        storage.save(path, ContentFile(data))
+        return path, len(data)
+
     tmp_path = path + ".tmp"
     if storage.exists(tmp_path):
         storage.delete(tmp_path)
     storage.save(tmp_path, ContentFile(data))
+
+    # Verify the staged upload actually landed before touching path.
+    if not storage.exists(tmp_path) or storage.size(tmp_path) != len(data):
+        from icv_sitemaps.exceptions import StorageError
+
+        raise StorageError(
+            f"Staged upload to {tmp_path!r} did not land as expected; leaving the previous file at {path!r} in place."
+        )
 
     if storage.exists(path):
         storage.delete(path)

@@ -579,6 +579,290 @@ class TestGenerateSectionFailure:
 
 
 # ---------------------------------------------------------------------------
+# Atomic publish (issue #5)
+# ---------------------------------------------------------------------------
+
+
+class TestReplaceInStorage:
+    """Regression for #5: a failed publish must retain the previous sitemap.
+
+    The pre-fix code (``_upload_temp_to_storage``) already staged to
+    ``dest_path + ".tmp"`` before touching ``dest_path``, but never verified
+    that staged copy: it deleted ``dest_path`` and re-saved from the local
+    temp file unconditionally, so a staged upload that landed truncated or
+    corrupt (the reported hazard, "the replacement upload fails") was
+    promoted anyway, destroying the previous file for no working
+    replacement. ``_replace_in_storage()`` verifies the staged copy's size
+    before ever deleting ``dest_path``
+    (``test_staged_upload_size_mismatch_leaves_previous_file_intact`` is the
+    test that actually distinguishes the fix from the old behaviour). The
+    ``.tmp``-write failure test below is included as a locked-in guarantee:
+    it already held pre-fix and must keep holding.
+    """
+
+    def test_failed_staged_upload_leaves_previous_file_intact(self, tmp_path):
+        """A failure while writing the staged .tmp copy must not touch the
+        previously published file at dest_path. Already true pre-fix (the
+        .tmp write happens before dest_path is touched either way); kept as
+        a locked-in guarantee alongside the size-mismatch test below, which
+        is the scenario the pre-fix code actually got wrong."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.services.generation import _replace_in_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        dest_path = "sitemaps/articles-0.xml"
+        previous_content = b"<?xml version='1.0'?><urlset><url><loc>old</loc></url></urlset>"
+        storage.save(dest_path, ContentFile(previous_content))
+
+        new_temp = tmp_path / "new-content.xml"
+        new_temp.write_bytes(b"<?xml version='1.0'?><urlset><url><loc>new</loc></url></urlset>")
+
+        original_save = storage.save
+        call_count = {"n": 0}
+
+        def _flaky_save(name, content, *args, **kwargs):
+            call_count["n"] += 1
+            if name.endswith(".tmp"):
+                raise OSError("simulated network failure during staged upload")
+            return original_save(name, content, *args, **kwargs)
+
+        with (
+            patch.object(storage, "save", side_effect=_flaky_save),
+            pytest.raises(OSError, match="simulated network failure"),
+        ):
+            _replace_in_storage(storage, str(new_temp), dest_path)
+
+        # The previous file must be exactly as it was: never deleted, never
+        # partially overwritten.
+        assert storage.exists(dest_path)
+        with storage.open(dest_path, "rb") as fh:
+            assert fh.read() == previous_content
+
+    def test_staged_upload_size_mismatch_leaves_previous_file_intact(self, tmp_path):
+        """A staged upload that silently lands truncated (verified by size,
+        not just existence) must not be promoted over the previous file."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.exceptions import StorageError
+        from icv_sitemaps.services.generation import _replace_in_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        dest_path = "sitemaps/articles-0.xml"
+        previous_content = b"<?xml version='1.0'?><urlset><url><loc>old</loc></url></urlset>"
+        storage.save(dest_path, ContentFile(previous_content))
+
+        new_temp = tmp_path / "new-content.xml"
+        new_temp.write_bytes(b"<?xml version='1.0'?><urlset><url><loc>new</loc></url></urlset>")
+
+        original_save = storage.save
+
+        def _truncating_save(name, content, *args, **kwargs):
+            if name.endswith(".tmp"):
+                # Simulate a backend that "succeeds" but writes short content.
+                return original_save(name, ContentFile(b"short"), *args, **kwargs)
+            return original_save(name, content, *args, **kwargs)
+
+        with (
+            patch.object(storage, "save", side_effect=_truncating_save),
+            pytest.raises(StorageError, match="did not land as expected"),
+        ):
+            _replace_in_storage(storage, str(new_temp), dest_path)
+
+        assert storage.exists(dest_path)
+        with storage.open(dest_path, "rb") as fh:
+            assert fh.read() == previous_content
+
+    def test_upload_temp_to_storage_public_name_verifies_staged_size(self, tmp_path):
+        """Same scenario exercised through the pre-existing public entry
+        point, ``_upload_temp_to_storage`` (still the function
+        ``_publish_shard`` calls), which is unchanged in name and signature
+        across the fix, so this proves the fix through the real call site
+        rather than only through the new ``_replace_in_storage`` name."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.exceptions import StorageError
+        from icv_sitemaps.services.generation import _upload_temp_to_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        dest_path = "sitemaps/articles-0.xml"
+        previous_content = b"<?xml version='1.0'?><urlset><url><loc>old</loc></url></urlset>"
+        storage.save(dest_path, ContentFile(previous_content))
+
+        new_temp = tmp_path / "new-content.xml"
+        new_temp.write_bytes(b"<?xml version='1.0'?><urlset><url><loc>new</loc></url></urlset>")
+
+        original_save = storage.save
+
+        def _truncating_save(name, content, *args, **kwargs):
+            if name.endswith(".tmp"):
+                return original_save(name, ContentFile(b"short"), *args, **kwargs)
+            return original_save(name, content, *args, **kwargs)
+
+        with (
+            patch.object(storage, "save", side_effect=_truncating_save),
+            pytest.raises(StorageError, match="did not land as expected"),
+        ):
+            _upload_temp_to_storage(storage, str(new_temp), dest_path)
+
+        assert storage.exists(dest_path)
+        with storage.open(dest_path, "rb") as fh:
+            assert fh.read() == previous_content
+
+    def test_successful_replace_publishes_new_content(self, tmp_path):
+        """The happy path still replaces dest_path with the new content."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.services.generation import _replace_in_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        dest_path = "sitemaps/articles-0.xml"
+        storage.save(dest_path, ContentFile(b"old"))
+
+        new_temp = tmp_path / "new-content.xml"
+        new_content = b"<?xml version='1.0'?><urlset><url><loc>new</loc></url></urlset>"
+        new_temp.write_bytes(new_content)
+
+        final_path, size = _replace_in_storage(storage, str(new_temp), dest_path)
+
+        assert final_path == dest_path
+        assert size == len(new_content)
+        with storage.open(dest_path, "rb") as fh:
+            assert fh.read() == new_content
+        # The staging file must not be left behind.
+        assert not storage.exists(dest_path + ".tmp")
+
+    def test_overwrite_capable_storage_skips_staging_entirely(self, tmp_path):
+        """When the storage backend overwrites in place, _replace_in_storage
+        writes dest_path directly: no .tmp file, no delete-then-save window."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.services.generation import _replace_in_storage
+
+        storage = FileSystemStorage(location=str(tmp_path), allow_overwrite=True)
+        dest_path = "sitemaps/articles-0.xml"
+        storage.save(dest_path, ContentFile(b"old"))
+
+        new_temp = tmp_path / "new-content.xml"
+        new_content = b"<?xml version='1.0'?><urlset><url><loc>new</loc></url></urlset>"
+        new_temp.write_bytes(new_content)
+
+        save_calls = []
+        original_save = storage.save
+
+        def _tracking_save(name, content, *args, **kwargs):
+            save_calls.append(name)
+            return original_save(name, content, *args, **kwargs)
+
+        with patch.object(storage, "save", side_effect=_tracking_save):
+            final_path, size = _replace_in_storage(storage, str(new_temp), dest_path)
+
+        assert final_path == dest_path
+        assert save_calls == [dest_path]  # exactly one save, no .tmp involved
+        with storage.open(dest_path, "rb") as fh:
+            assert fh.read() == new_content
+
+
+class TestWriteBufferedToStorageAtomicity:
+    """Same #5 regression coverage for the buffered/index write path.
+
+    ``_write_buffered_to_storage()`` already staged to ``path + ".tmp"``
+    before the fix, so a failure mid-staging-upload (this first test) did
+    not regress: it is included as a locked-in guarantee. The scenario that
+    the pre-fix code actually got wrong is
+    ``test_staged_upload_size_mismatch_leaves_previous_index_intact``: the
+    old code never verified the staged copy before deleting and replacing
+    the previous file.
+    """
+
+    def test_failed_staged_upload_leaves_previous_index_intact(self, tmp_path):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.services.generation import _write_buffered_to_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        path = "sitemaps/sitemap.xml"
+        previous_content = b"<?xml version='1.0'?><sitemapindex></sitemapindex>"
+        storage.save(path, ContentFile(previous_content))
+
+        original_save = storage.save
+
+        def _flaky_save(name, content, *args, **kwargs):
+            if name.endswith(".tmp"):
+                raise OSError("simulated network failure")
+            return original_save(name, content, *args, **kwargs)
+
+        with (
+            patch.object(storage, "save", side_effect=_flaky_save),
+            pytest.raises(OSError, match="simulated network failure"),
+        ):
+            _write_buffered_to_storage(storage, path, b"<new index content>")
+
+        assert storage.exists(path)
+        with storage.open(path, "rb") as fh:
+            assert fh.read() == previous_content
+
+    def test_staged_upload_size_mismatch_leaves_previous_index_intact(self, tmp_path):
+        """The staged .tmp write must be verified by size before it is
+        promoted; a backend that "succeeds" but writes short content must not
+        destroy the previous index. This is the scenario that distinguishes
+        the fix from the pre-fix code: both write .tmp first, but only the
+        fix verifies the staged copy before deleting the previous file."""
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.exceptions import StorageError
+        from icv_sitemaps.services.generation import _write_buffered_to_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        path = "sitemaps/sitemap.xml"
+        previous_content = b"<?xml version='1.0'?><sitemapindex></sitemapindex>"
+        storage.save(path, ContentFile(previous_content))
+
+        original_save = storage.save
+
+        def _truncating_save(name, content, *args, **kwargs):
+            if name.endswith(".tmp"):
+                return original_save(name, ContentFile(b"short"), *args, **kwargs)
+            return original_save(name, content, *args, **kwargs)
+
+        with (
+            patch.object(storage, "save", side_effect=_truncating_save),
+            pytest.raises(StorageError, match="did not land as expected"),
+        ):
+            _write_buffered_to_storage(storage, path, b"<new index content, much longer than 'short'>")
+
+        assert storage.exists(path)
+        with storage.open(path, "rb") as fh:
+            assert fh.read() == previous_content
+
+    def test_successful_write_publishes_new_content(self, tmp_path):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from icv_sitemaps.services.generation import _write_buffered_to_storage
+
+        storage = FileSystemStorage(location=str(tmp_path))
+        path = "sitemaps/sitemap.xml"
+        storage.save(path, ContentFile(b"old"))
+
+        new_data = b"<?xml version='1.0'?><sitemapindex><new/></sitemapindex>"
+        final_path, size = _write_buffered_to_storage(storage, path, new_data)
+
+        assert final_path == path
+        assert size == len(new_data)
+        with storage.open(path, "rb") as fh:
+            assert fh.read() == new_data
+        assert not storage.exists(path + ".tmp")
+
+
+# ---------------------------------------------------------------------------
 # generate_index
 # ---------------------------------------------------------------------------
 

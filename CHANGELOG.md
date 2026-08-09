@@ -15,6 +15,25 @@
   this). `force` is now forwarded through `_generate_section()` to
   `_run_generation()` to the service call.
 
+- **A failed sitemap replacement upload no longer deletes the previous
+  published file** (#5, BR-006). Publishing deleted the file at the final
+  storage path and only then re-uploaded from the staged copy, unconditionally:
+  a staged upload that failed, or landed truncated or corrupt, was promoted
+  anyway, destroying the last known-good sitemap for no working replacement.
+  The docstring's atomicity claim ("write to a temporary path, then rename")
+  was also inaccurate: generic Django `Storage` has no rename primitive. The
+  new strategy depends on what the storage backend actually supports: a
+  backend that overwrites in place (S3 with `AWS_S3_FILE_OVERWRITE=True`,
+  `FileSystemStorage(allow_overwrite=True)`) gets a single `save()` with no
+  delete-then-save window at all; a generic backend stages and verifies
+  (existence and size) the new content at `path + ".tmp"` before ever
+  deleting the previous file, so a failed or corrupt staged upload leaves
+  the previous file completely untouched. Applies to both section files
+  and the sitemap index. A narrow window between the final delete and save
+  remains an inherent limitation of generic `Storage` on backends that do
+  not overwrite; this is no longer claimed to be fully atomic there, only
+  that a failed *upload* cannot destroy the previous file.
+
 ## [0.8.0] - 2026-07-19
 
 ### Added
