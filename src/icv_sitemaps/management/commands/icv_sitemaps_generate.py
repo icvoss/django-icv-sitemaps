@@ -128,7 +128,7 @@ class Command(BaseCommand):
 
         self.stdout.write(f"  [{section.name}] Generating ({section.sitemap_type})...")
         try:
-            url_count = self._run_generation(section)
+            url_count = self._run_generation(section, force=force)
             self.stdout.write(self.style.SUCCESS(f"  [{section.name}] Done — {url_count} URL(s)"))
             return True, url_count
         except SitemapGenerationError as exc:
@@ -140,17 +140,24 @@ class Command(BaseCommand):
             logger.exception("Unexpected error generating section '%s'", section.name)
             return False, 0
 
-    def _run_generation(self, section) -> int:
+    def _run_generation(self, section, *, force: bool) -> int:
         """Invoke the generation service for a section and return URL count.
 
         Defers to the service layer when available; falls back to a direct
         model-based count so the command remains useful even before the full
         service layer is implemented.
+
+        ``force`` must be forwarded to the service call: ``_generate_section``
+        already decided the section is due for generation (stale, or a forced
+        run), but ``generate_section()`` re-checks ``is_stale`` itself and
+        silently returns 0 without writing anything unless it also receives
+        ``force=True``. Dropping the flag here made every forced run on a
+        fresh section a silent no-op that still reported success.
         """
         try:
             from icv_sitemaps.services import generate_section
 
-            url_count = generate_section(section)
+            url_count = generate_section(section, force=force)
             return url_count
         except ImportError:
             pass
