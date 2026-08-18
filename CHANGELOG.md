@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Django 6.1 added to the CI test matrix** and declared via the
+  `Framework :: Django :: 6.1` classifier.
+
 ## [1.0.0] - 2026-08-09
 
 ### Fixed
