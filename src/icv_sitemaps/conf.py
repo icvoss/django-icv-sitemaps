@@ -94,3 +94,10 @@ ICV_SITEMAPS_404_IGNORE_PATTERNS: list = getattr(
     "ICV_SITEMAPS_404_IGNORE_PATTERNS",
     [r"\.(?:css|js|ico|png|jpg|jpeg|gif|svg|woff2?|ttf|eot|map)$"],
 )
+
+# Dotted path to a callable that decides whether an already-404 path is
+# deliberately gone. Signature: func(request) -> int | None. Called only
+# after a gone RedirectRule lookup has found nothing. Returning 410 serves
+# a 410 Gone response; returning None (or anything else) passes through to
+# normal 404 handling. Empty string disables the hook entirely.
+ICV_SITEMAPS_GONE_RESOLVER: str = getattr(settings, "ICV_SITEMAPS_GONE_RESOLVER", "")

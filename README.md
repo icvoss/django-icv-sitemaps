@@ -529,6 +529,36 @@ with open("redirects.csv") as f:
     rows = list(csv.DictReader(f))
     result = bulk_import_redirects(rows)
     # {"created": 150, "updated": 3, "errors": []}
+
+# Bulk create (insert-only, faster for a large one-off import)
+from icv_sitemaps.services import bulk_create_redirects
+
+result = bulk_create_redirects(rows)
+# {"created": 150, "errors": []}
+```
+
+#### Raw `bulk_create` bypasses cache invalidation
+
+`RedirectRule`'s cache is invalidated by a `post_save`/`post_delete` signal
+handler, and Django's `bulk_create` emits neither signal. Writing
+`RedirectRule` rows directly with `RedirectRule.objects.bulk_create(...)`
+leaves the cached `prefix`/`regex` rule list stale until
+`ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT` expires (default 300 seconds), even
+though the rows already exist in the database. Exact-match rules are
+unaffected: `check_redirect` always resolves an exact match with a direct
+database query, never from the cache.
+
+Either use `bulk_create_redirects` above, which does one
+`bulk_create(ignore_conflicts=True)` and invalidates the cache once at the
+end, or call `RedirectRule.objects.bulk_create(...)` yourself followed by
+`invalidate_redirect_cache(tenant_id=...)`:
+
+```python
+from icv_sitemaps.services import invalidate_redirect_cache
+from icv_sitemaps.models import RedirectRule
+
+RedirectRule.objects.bulk_create([...])
+invalidate_redirect_cache(tenant_id="acme")
 ```
 
 ### Enable the Middleware
@@ -578,6 +608,34 @@ python manage.py icv_sitemaps_redirects --export redirects.csv
 python manage.py icv_sitemaps_redirects --prune   # Remove expired rules
 ```
 
+### Gone Resolution Hook
+
+`ICV_SITEMAPS_GONE_RESOLVER` lets a consumer answer "is this already-404
+path deliberately gone?" from their own data, without materialising a
+`RedirectRule` row per deleted object. It is called only on the 404 path,
+and only after a gone `RedirectRule` lookup has already found nothing, so a
+hand-authored rule always takes precedence over the resolver.
+
+```python
+# myapp/services.py
+def is_gone(request):
+    if Product.deleted_objects.filter(old_url=request.path).exists():
+        return 410
+    return None
+
+# settings.py
+ICV_SITEMAPS_GONE_RESOLVER = "myapp.services.is_gone"
+```
+
+The callable takes the request and returns `410` or `None`; `410` is the
+only supported status code. Any other return value, including other status
+codes, is logged as a warning and treated as `None` (the 404 passes through
+unchanged): this hook exists to express "this URL is gone", not to rewrite
+arbitrary responses. An exception raised by the callable is caught, logged,
+and treated the same as `None` (fail-open, never breaks the response). A
+path resolved this way is served the same 410 response as a matching `410`
+`RedirectRule` and is not additionally recorded by the 404 tracker.
+
 ---
 
 ## Configuration
@@ -611,6 +669,7 @@ sensible default so the package works out of the box for local development.
 | `ICV_SITEMAPS_404_TRACKING_ENABLED` | `bool` | `False` | Enable 404 tracking in the redirect middleware |
 | `ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE` | `float` | `1.0` | Fraction of 404s to track (0.0--1.0) |
 | `ICV_SITEMAPS_404_IGNORE_PATTERNS` | `list` | `[r"\.(?:css\|js\|...)$"]` | Regex patterns for paths to ignore when tracking 404s |
+| `ICV_SITEMAPS_GONE_RESOLVER` | `str` | `""` | Dotted path to a callable answering "is this already-404 path deliberately gone?" |
 
 ### Auto-Sections Configuration
 
@@ -662,6 +721,8 @@ from icv_sitemaps.services import (
     check_redirect,
     add_redirect,
     bulk_import_redirects,
+    bulk_create_redirects,
+    invalidate_redirect_cache,
     record_404,
     get_top_404s,
 )
