@@ -56,6 +56,20 @@ ICV_SITEMAPS_ROBOTS_SITEMAP_URL: str = getattr(settings, "ICV_SITEMAPS_ROBOTS_SI
 # Cache TTL in seconds for rendered discovery files
 ICV_SITEMAPS_CACHE_TIMEOUT: int = getattr(settings, "ICV_SITEMAPS_CACHE_TIMEOUT", 3600)
 
+# Override (or disable) the Cache-Control header emitted by every sitemap
+# and discovery-file view. Empty string (default) derives
+# "public, max-age=<ICV_SITEMAPS_CACHE_TIMEOUT>" from the setting above, so
+# the freshness opinion already expressed by server-side caching is also
+# communicated to crawlers, CDNs and reverse proxies. The literal value
+# "none" disables the header entirely (no Cache-Control is emitted). Any
+# other non-empty string is sent verbatim as the header value, letting an
+# operator opt into their own directive set (e.g. "public, max-age=60,
+# stale-while-revalidate=30") without touching view code. A response
+# served from a render failure (see the sitemap views' documented
+# render-failure path) never receives this header regardless of this
+# setting: a failed render is never cacheable.
+ICV_SITEMAPS_HTTP_CACHE_CONTROL: str = getattr(settings, "ICV_SITEMAPS_HTTP_CACHE_CONTROL", "")
+
 # Emit the IAB placeholder record ("placeholder.example.com, placeholder,
 # DIRECT, placeholder") when ads.txt or app-ads.txt has no active entries,
 # rather than serving an empty body. ads.txt v1.1 s3.2.1 deprecated the
