@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 
 from django.http import Http404, HttpResponse, HttpResponsePermanentRedirect
+from django.utils.cache import get_conditional_response, patch_cache_control
+from django.utils.http import http_date, quote_etag
 from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,71 @@ def _get_cache_timeout() -> int:
     from icv_sitemaps.conf import ICV_SITEMAPS_CACHE_TIMEOUT
 
     return ICV_SITEMAPS_CACHE_TIMEOUT
+
+
+def _content_etag(content: bytes | str) -> str:
+    """Return a quoted strong ETag: the SHA-256 hex digest of *content*.
+
+    A hash of the exact bytes served is a legitimate strong validator for
+    both stored sitemap files (where it happens to equal ``SitemapFile
+    .checksum`` when the shard is unchanged) and rendered discovery files
+    (where there is no other persisted validator to reach for).
+    """
+    data = content.encode("utf-8") if isinstance(content, str) else content
+    digest = hashlib.sha256(data).hexdigest()
+    return quote_etag(digest)
+
+
+def _apply_cache_control(response: HttpResponse) -> None:
+    """Patch ``Cache-Control`` onto *response* per ``ICV_SITEMAPS_HTTP_CACHE_CONTROL``.
+
+    Empty (default) derives ``public, max-age=<ICV_SITEMAPS_CACHE_TIMEOUT>``.
+    The literal value ``"none"`` disables the header entirely. Any other
+    non-empty string is sent verbatim. Callers on a render-failure path
+    must not call this: a failed render is never cacheable regardless of
+    this setting.
+    """
+    from icv_sitemaps.conf import ICV_SITEMAPS_HTTP_CACHE_CONTROL
+
+    override = ICV_SITEMAPS_HTTP_CACHE_CONTROL
+    if override == "none":
+        return
+    if override:
+        response["Cache-Control"] = override
+        return
+    patch_cache_control(response, public=True, max_age=_get_cache_timeout())
+
+
+def _finalise_cacheable_response(
+    request,
+    response: HttpResponse,
+    *,
+    content: bytes | str,
+    last_modified=None,
+) -> HttpResponse:
+    """Attach validators and Cache-Control, then resolve conditional GET.
+
+    Sets ``ETag`` (always, hashed from *content*) and ``Last-Modified``
+    (only when *last_modified* is a genuine, non-fabricated datetime),
+    applies ``Cache-Control``, then defers to Django's own
+    ``get_conditional_response`` to honour ``If-None-Match`` /
+    ``If-Modified-Since`` and return a bodyless 304 when they match. This
+    must only be called on a response that is genuinely fit to cache; a
+    render-failure fallback body must never reach this helper.
+    """
+    etag = _content_etag(content)
+    response["ETag"] = etag
+    last_modified_epoch = None
+    if last_modified is not None:
+        last_modified_epoch = int(last_modified.timestamp())
+        response["Last-Modified"] = http_date(last_modified_epoch)
+    _apply_cache_control(response)
+    return get_conditional_response(
+        request,
+        etag=etag,
+        last_modified=last_modified_epoch,
+        response=response,
+    )
 
 
 def _get_tenant_id(request) -> str:
@@ -99,6 +167,12 @@ def sitemap_index_view(request) -> HttpResponse:
     configured storage backend.  Falls back to on-the-fly generation via
     ``generate_index()`` when no file is present, suitable for small sites
     that have not yet run the generation command.
+
+    Emits a strong ``ETag`` hashed from the served bytes and honours
+    ``If-None-Match`` with a bodyless 304. No ``Last-Modified`` header: the
+    index has no ``SitemapFile`` row of its own (it lists every section's
+    files) and no other genuinely persisted modification time, so this
+    view omits the header rather than fabricate one.
     """
     from django.core.files.storage import default_storage
 
@@ -127,7 +201,8 @@ def sitemap_index_view(request) -> HttpResponse:
                     raise Http404("Sitemap index file exceeds size limit.")
                 with default_storage.open(path, "rb") as fh:
                     content = fh.read()
-                return _sitemap_response(content, path)
+                response = _sitemap_response(content, path)
+                return _finalise_cacheable_response(request, response, content=content)
         except Http404:
             raise
         except Exception:
@@ -150,7 +225,8 @@ def sitemap_index_view(request) -> HttpResponse:
                     raise Http404("Sitemap index file exceeds size limit.")
                 with default_storage.open(path, "rb") as fh:
                     content = fh.read()
-                return _sitemap_response(content, path)
+                response = _sitemap_response(content, path)
+                return _finalise_cacheable_response(request, response, content=content)
     except Http404:
         raise
     except Exception:
@@ -165,10 +241,20 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
 
     Validates *filename* to prevent path traversal before attempting to read
     from the configured storage backend.
+
+    Emits a strong ``ETag`` hashed from the served bytes and honours
+    ``If-None-Match`` with a bodyless 304. Emits ``Last-Modified`` (and
+    honours ``If-Modified-Since``) only when a ``SitemapFile`` row exists
+    for this exact storage path: that row's ``generated_at`` is a genuine,
+    persisted modification time (carried forward unchanged when a
+    regeneration reproduces the same content, per BR-IDX-003), never a
+    fabricated "now". A file served with no matching row (for example one
+    placed directly in storage) gets no ``Last-Modified`` header.
     """
     from django.core.files.storage import default_storage
 
     from icv_sitemaps.conf import ICV_SITEMAPS_MAX_FILE_SIZE_BYTES, ICV_SITEMAPS_STORAGE_PATH
+    from icv_sitemaps.models.sections import SitemapFile
 
     if not _validate_filename(filename):
         raise Http404("Invalid filename.")
@@ -193,7 +279,11 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
         with default_storage.open(storage_path, "rb") as fh:
             content = fh.read()
 
-        return _sitemap_response(content, storage_path)
+        response = _sitemap_response(content, storage_path)
+        last_modified = (
+            SitemapFile.objects.filter(storage_path=storage_path).values_list("generated_at", flat=True).first()
+        )
+        return _finalise_cacheable_response(request, response, content=content, last_modified=last_modified)
     except Http404:
         raise
     except Exception as exc:
@@ -220,6 +310,15 @@ def robots_txt_view(request) -> HttpResponse:
     never cached, since an empty robots.txt means "allow everything", the
     opposite of a restrictive ruleset that failed to render, and caching
     it would serve that for the full timeout.
+
+    A successfully rendered (or cache-hit) body gets a strong ``ETag``
+    hashed from that body and honours ``If-None-Match``, plus
+    ``Cache-Control`` per ``ICV_SITEMAPS_HTTP_CACHE_CONTROL``. A
+    render-failure body gets neither: it must not be validated as
+    "unchanged" against a previous good body, and must not be told to a
+    client or an intermediate cache as safe to reuse. No ``Last-Modified``:
+    the rendered body aggregates every ``RobotsRule`` row for the tenant
+    with no single genuine modification time to report.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.robots import render_robots_txt
@@ -229,16 +328,21 @@ def robots_txt_view(request) -> HttpResponse:
     timeout = _get_cache_timeout()
 
     content = safe_get(cache_key)
+    render_failed = False
     if content is None:
         try:
             content = render_robots_txt(tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering robots.txt.")
             content = ""
+            render_failed = True
         else:
             safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain")
+    response = HttpResponse(content, content_type="text/plain")
+    if render_failed:
+        return response
+    return _finalise_cacheable_response(request, response, content=content)
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -248,6 +352,13 @@ def llms_txt_view(request) -> HttpResponse:
     Returns 404 when no active ``DiscoveryFileConfig`` record exists for the
     ``llms_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
+
+    Emits a strong ``ETag`` hashed from the served body and honours
+    ``If-None-Match``, plus ``Cache-Control`` per
+    ``ICV_SITEMAPS_HTTP_CACHE_CONTROL``. No ``Last-Modified``:
+    ``get_discovery_file_content()`` returns the stored text only, not the
+    row's ``updated_at``, and there is no other genuine modification time
+    to report here.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
@@ -263,7 +374,8 @@ def llms_txt_view(request) -> HttpResponse:
             raise Http404("llms.txt not configured.")
         safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain; charset=utf-8")
+    response = HttpResponse(content, content_type="text/plain; charset=utf-8")
+    return _finalise_cacheable_response(request, response, content=content)
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -273,6 +385,14 @@ def ads_txt_view(request) -> HttpResponse:
     Content is rendered from active ``AdsEntry`` records with
     ``is_app_ads=False`` and cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
+
+    A successfully rendered (or cache-hit) body gets a strong ``ETag`` and
+    honours ``If-None-Match``, plus ``Cache-Control``. A render-failure
+    body gets neither, for the same reason as ``robots_txt_view``: an
+    empty ads.txt reads as "no authorised sellers declared", which must
+    not be served as a validated, cacheable 200 when it is really a
+    rendering failure. No ``Last-Modified``: the body aggregates every
+    matching ``AdsEntry`` row with no single genuine modification time.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.ads import render_ads_txt
@@ -282,16 +402,21 @@ def ads_txt_view(request) -> HttpResponse:
     timeout = _get_cache_timeout()
 
     content = safe_get(cache_key)
+    render_failed = False
     if content is None:
         try:
             content = render_ads_txt(app_ads=False, tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering ads.txt.")
             content = ""
+            render_failed = True
         else:
             safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain")
+    response = HttpResponse(content, content_type="text/plain")
+    if render_failed:
+        return response
+    return _finalise_cacheable_response(request, response, content=content)
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -300,6 +425,10 @@ def app_ads_txt_view(request) -> HttpResponse:
 
     Content is rendered from active ``AdsEntry`` records with
     ``is_app_ads=True`` and cached for ``ICV_SITEMAPS_CACHE_TIMEOUT`` seconds.
+
+    Same validator and Cache-Control treatment as ``ads_txt_view``,
+    including the same render-failure carve-out: a failed render is never
+    given an ``ETag`` or a positive ``Cache-Control`` max-age.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.ads import render_ads_txt
@@ -309,16 +438,21 @@ def app_ads_txt_view(request) -> HttpResponse:
     timeout = _get_cache_timeout()
 
     content = safe_get(cache_key)
+    render_failed = False
     if content is None:
         try:
             content = render_ads_txt(app_ads=True, tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering app-ads.txt.")
             content = ""
+            render_failed = True
         else:
             safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain")
+    response = HttpResponse(content, content_type="text/plain")
+    if render_failed:
+        return response
+    return _finalise_cacheable_response(request, response, content=content)
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -328,6 +462,9 @@ def security_txt_view(request) -> HttpResponse:
     Returns 404 when no active ``DiscoveryFileConfig`` record exists for the
     ``security_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
+
+    Same validator and Cache-Control treatment as ``llms_txt_view``: a
+    strong ``ETag`` hashed from the body, no ``Last-Modified``.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
@@ -343,7 +480,8 @@ def security_txt_view(request) -> HttpResponse:
             raise Http404("security.txt not configured.")
         safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain")
+    response = HttpResponse(content, content_type="text/plain")
+    return _finalise_cacheable_response(request, response, content=content)
 
 
 def security_txt_root_view(request) -> HttpResponsePermanentRedirect:
@@ -369,6 +507,9 @@ def humans_txt_view(request) -> HttpResponse:
     Returns 404 when no active ``DiscoveryFileConfig`` record exists for the
     ``humans_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
+
+    Same validator and Cache-Control treatment as ``llms_txt_view``: a
+    strong ``ETag`` hashed from the body, no ``Last-Modified``.
     """
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
@@ -384,4 +525,5 @@ def humans_txt_view(request) -> HttpResponse:
             raise Http404("humans.txt not configured.")
         safe_set(cache_key, content, timeout)
 
-    return HttpResponse(content, content_type="text/plain")
+    response = HttpResponse(content, content_type="text/plain")
+    return _finalise_cacheable_response(request, response, content=content)
