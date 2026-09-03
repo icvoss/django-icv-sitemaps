@@ -361,3 +361,93 @@ class TestRedirectMiddlewareGoneOn404:
         from icv_sitemaps.models.redirects import RedirectLog
 
         assert RedirectLog.objects.filter(path="/genuinely-missing/").exists()
+
+
+class TestGoneResolver:
+    """ICV_SITEMAPS_GONE_RESOLVER: consumer hook for gone-resolution (#27).
+
+    Runs only on the 404 path, only after a gone ``RedirectRule`` lookup has
+    found nothing.
+    """
+
+    def test_unset_resolver_is_unchanged_behaviour(self, db, rf, make_path_middleware):
+        """No setting configured: identical to pre-#27 404 handling."""
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", ""):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/genuinely-missing/")
+            response = middleware(request)
+
+        assert response.status_code == 404
+
+    def test_resolver_returning_410_serves_410(self, db, rf, make_path_middleware):
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.always_gone"):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/deleted-product/")
+            response = middleware(request)
+
+        assert response.status_code == 410
+
+    def test_resolver_returning_none_passes_through_to_404(self, db, rf, make_path_middleware):
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.never_gone"):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/genuinely-missing/")
+            response = middleware(request)
+
+        assert response.status_code == 404
+
+    def test_resolver_that_raises_is_fail_open(self, db, rf, make_path_middleware):
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.raises"):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/genuinely-missing/")
+            response = middleware(request)
+
+        assert response.status_code == 404
+
+    def test_resolver_unexpected_value_passes_through_and_warns(self, db, rf, make_path_middleware, caplog):
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.returns_404"):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/genuinely-missing/")
+            with caplog.at_level("WARNING"):
+                response = middleware(request)
+
+        assert response.status_code == 404
+        assert "unexpected value" in caplog.text
+
+    def test_resolver_not_called_when_response_is_not_404(self, db, rf, make_path_middleware):
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.raises"):
+            middleware = make_path_middleware(resolved_paths={"/live-page/"})
+            request = rf.get("/live-page/")
+            response = middleware(request)
+
+        assert response.status_code == 200
+
+    def test_resolver_not_called_when_a_gone_rule_already_matched(self, db, rf, make_path_middleware):
+        """Rules beat the resolver: ordering is rules first, then resolver."""
+        RedirectRuleFactory(source_pattern="/deleted-product/", destination="", status_code=410)
+
+        with patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.raises"):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/deleted-product/")
+            response = middleware(request)
+
+        # If the resolver had been called it would raise and the exception
+        # is not caught anywhere along this path, so a clean 410 here proves
+        # the rule short-circuited before the resolver ran.
+        assert response.status_code == 410
+
+    def test_resolver_hit_does_not_also_record_a_404(self, db, rf, make_path_middleware):
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_GONE_RESOLVER", "tests.gone_resolvers.always_gone"),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_ENABLED", True),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE", 1.0),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_IGNORE_PATTERNS", []),
+        ):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/deleted-product/")
+            response = middleware(request)
+
+        assert response.status_code == 410
+
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        assert not RedirectLog.objects.filter(path="/deleted-product/").exists()

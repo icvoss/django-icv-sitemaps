@@ -578,6 +578,34 @@ python manage.py icv_sitemaps_redirects --export redirects.csv
 python manage.py icv_sitemaps_redirects --prune   # Remove expired rules
 ```
 
+### Gone Resolution Hook
+
+`ICV_SITEMAPS_GONE_RESOLVER` lets a consumer answer "is this already-404
+path deliberately gone?" from their own data, without materialising a
+`RedirectRule` row per deleted object. It is called only on the 404 path,
+and only after a gone `RedirectRule` lookup has already found nothing, so a
+hand-authored rule always takes precedence over the resolver.
+
+```python
+# myapp/services.py
+def is_gone(request):
+    if Product.deleted_objects.filter(old_url=request.path).exists():
+        return 410
+    return None
+
+# settings.py
+ICV_SITEMAPS_GONE_RESOLVER = "myapp.services.is_gone"
+```
+
+The callable takes the request and returns `410` or `None`; `410` is the
+only supported status code. Any other return value, including other status
+codes, is logged as a warning and treated as `None` (the 404 passes through
+unchanged): this hook exists to express "this URL is gone", not to rewrite
+arbitrary responses. An exception raised by the callable is caught, logged,
+and treated the same as `None` (fail-open, never breaks the response). A
+path resolved this way is served the same 410 response as a matching `410`
+`RedirectRule` and is not additionally recorded by the 404 tracker.
+
 ---
 
 ## Configuration
@@ -611,6 +639,7 @@ sensible default so the package works out of the box for local development.
 | `ICV_SITEMAPS_404_TRACKING_ENABLED` | `bool` | `False` | Enable 404 tracking in the redirect middleware |
 | `ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE` | `float` | `1.0` | Fraction of 404s to track (0.0--1.0) |
 | `ICV_SITEMAPS_404_IGNORE_PATTERNS` | `list` | `[r"\.(?:css\|js\|...)$"]` | Regex patterns for paths to ignore when tracking 404s |
+| `ICV_SITEMAPS_GONE_RESOLVER` | `str` | `""` | Dotted path to a callable answering "is this already-404 path deliberately gone?" |
 
 ### Auto-Sections Configuration
 

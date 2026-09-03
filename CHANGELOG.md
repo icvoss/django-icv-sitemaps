@@ -4,10 +4,48 @@
 
 ### Added
 
+- **`ICV_SITEMAPS_GONE_RESOLVER`** (#27), a consumer hook for gone-resolution
+  on the 404 path. A dotted path to a callable taking the request and
+  returning `410` or `None`, resolved the same way as
+  `ICV_SITEMAPS_TENANT_PREFIX_FUNC` and called from `RedirectMiddleware`
+  only when the response is a 404 and no gone `RedirectRule` matched, so a
+  hand-authored rule still wins. Lets a consumer answer "is this path
+  deliberately gone?" from their own data (for example a soft-delete flag)
+  without materialising a `RedirectRule` row per deleted object. Any return
+  value other than `410` or `None` is logged as a warning and treated as
+  `None`; a raising callable is caught, logged, and fails open to the
+  normal 404 response.
+
 - **Django 6.1 added to the CI test matrix** and declared via the
   `Framework :: Django :: 6.1` classifier.
 
 ### Fixed
+
+- **`check_redirect` scanned every active rule in Python on every request**
+  (#16). This made `RedirectRule` impractical for machine-generated
+  exact-match rules, such as a job that creates a 410 "gone" tombstone for
+  each deleted catalogue item: the cached rule list, and the linear scan
+  over it, both grew with the number of exact rules, adding real latency to
+  every request once the rule count reached the tens or hundreds of
+  thousands, even for paths that matched nothing.
+
+  An exact match is now resolved by a single direct database query
+  (`match_type="exact"`, `source_pattern=<path>`, scoped by `tenant_id`)
+  before the cached list is ever built or read, so its cost no longer
+  depends on how many exact rules exist. This needs no new index:
+  `source_pattern` already carries `db_index=True`, which serves this
+  query on every supported database backend. Exact rules are also no
+  longer included in the cached prefix/regex list, so a cache that would
+  have held 200,000 exact rules now holds none of them. Because the cached
+  payload's meaning changed, its key moved from
+  `icv_sitemaps:redirects:v2:<tenant_id>` to
+  `icv_sitemaps:redirects:v3:<tenant_id>`; a stale v2 entry from a
+  pre-upgrade process is simply ignored and the list is rebuilt under the
+  new shape on next read, no action needed. `check_redirect`'s documented
+  precedence (exact beats prefix beats regex, `priority` only orders
+  within a match type) and its `status_codes` filter (#17) are unchanged;
+  the exact-match query applies `status_codes` itself, so a 410-only exact
+  rule still cannot pre-empt a live view before the urlconf runs.
 
 - **A 410 rule could shadow a live view** (#17). `RedirectMiddleware` now
   splits redirect evaluation by status code: a 301/302/307/308 rule is still

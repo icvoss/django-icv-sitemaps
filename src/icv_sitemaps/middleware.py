@@ -68,6 +68,10 @@ class RedirectMiddleware:
             if gone_rule is not None:
                 return self._serve_redirect(gone_rule, request)
 
+            gone_status = self._check_gone_resolver(request)
+            if gone_status is not None:
+                return HttpResponseGone()
+
             self._maybe_record_404(request)
 
         return response
@@ -145,6 +149,49 @@ class RedirectMiddleware:
             record_404(path, tenant_id=tenant_id, referrer=referrer)
         except Exception:
             logger.exception("RedirectMiddleware: error recording 404 for %r.", path)
+
+    def _check_gone_resolver(self, request) -> int | None:
+        """Ask ``ICV_SITEMAPS_GONE_RESOLVER`` whether this already-404 path is gone.
+
+        Only reached when no gone ``RedirectRule`` matched, so a
+        hand-authored rule always beats consumer data.
+
+        The only supported return value is ``410``: the hook exists to
+        express "this URL is deliberately gone", nothing more. Widening it
+        to arbitrary status codes would turn a narrow gone-resolution seam
+        into a general response-rewriting hook, which is a different and
+        much larger contract than this setting documents. ``None`` means
+        "not gone". Any other value, including other valid status codes, is
+        logged as a warning and treated as ``None``, mirroring how
+        ``_get_tenant_id()`` rejects an unsafe return value rather than
+        trusting it.
+        """
+        from icv_sitemaps.conf import ICV_SITEMAPS_GONE_RESOLVER
+
+        if not ICV_SITEMAPS_GONE_RESOLVER:
+            return None
+
+        try:
+            from django.utils.module_loading import import_string
+
+            func = import_string(ICV_SITEMAPS_GONE_RESOLVER)
+            result = func(request)
+            if result is None:
+                return None
+            if result == 410:
+                return 410
+            logger.warning(
+                "RedirectMiddleware: gone resolver %r returned unexpected value %r, ignoring.",
+                ICV_SITEMAPS_GONE_RESOLVER,
+                result,
+            )
+            return None
+        except Exception:
+            logger.exception(
+                "RedirectMiddleware: gone resolver %r failed, passing through.",
+                ICV_SITEMAPS_GONE_RESOLVER,
+            )
+            return None
 
     def _get_tenant_id(self, request) -> str:
         """Resolve tenant ID from the request."""
