@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Missing PEP 561 `py.typed` marker** (#39). The package ships fully
+  annotated source but no `py.typed` file, so PEP 561 requires a type
+  checker running in a consuming project to ignore the annotations
+  entirely and treat every import from `icv_sitemaps` as `Any`. Added the
+  marker and a `[tool.setuptools.package-data]` declaration so it is
+  actually packaged in the wheel; a consumer's `mypy` or `pyright` run can
+  now see this package's types.
+
 ## [2.0.0] - 2026-09-03
 
 ### Added
