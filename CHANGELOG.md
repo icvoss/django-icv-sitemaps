@@ -75,6 +75,26 @@
   to an explicitly settable `DateTimeField` (migration
   `0006_alter_sitemapfile_generated_at`) so the carried-forward value is
   not silently overwritten on create.
+- **`robots.txt` now emits rules in RFC 9309 longest-match order, not
+  author-declared order** (#21). Within each `User-agent` group, `Allow`
+  and `Disallow` rules are sorted by descending path-pattern length, with
+  `Allow` winning an exact-length tie, matching what every conforming
+  crawler already does when it parses the file. This changes emitted
+  output only for rule sets where the `order` field and longest match
+  already disagreed; in that exact situation the previous output was not
+  what a crawler would apply, so this is a correctness fix rather than a
+  behaviour change for rule sets without overlapping paths. `order` still
+  has a real job: it is now the tiebreaker between rules of equal
+  specificity, and `RobotsRule.order`'s help text has been reworded to
+  describe that (a new migration, `0006_alter_robotsrule_order`, ships the
+  `help_text` change).
+
+- **User-agent groups now fold case-insensitively** (#21), per RFC 9309's
+  requirement that the product token is case-insensitive and that multiple
+  groups matching one user agent be combined into one. `Googlebot` and
+  `googlebot` rules previously rendered as two separate `User-agent`
+  blocks; they now render as a single group, under the first-seen
+  spelling.
 
 ## [1.0.0] - 2026-08-09
 

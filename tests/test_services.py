@@ -104,6 +104,77 @@ class TestRenderRobotsTxt:
 
         assert "# Keep crawlers out of staging" in content
 
+    def test_longest_match_wins_over_author_order(self, db, settings):
+        """RFC 9309 s2.2.2: the most specific path pattern MUST be used.
+
+        Author ``order`` disagrees with longest match here: the broad
+        Disallow is declared first (order=0) and the narrower, more specific
+        Allow second (order=1). A conforming crawler resolves by path length,
+        not declaration order, so the longer ``/admin/public/`` pattern must
+        be emitted before the shorter ``/admin/`` pattern regardless of
+        ``order``. This is the case current author-order emission gets wrong.
+        """
+        settings.ICV_SITEMAPS_BASE_URL = ""
+        settings.ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES = []
+        settings.ICV_SITEMAPS_ROBOTS_SITEMAP_URL = ""
+
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/", order=0)
+        RobotsRuleFactory(user_agent="*", directive="allow", path="/admin/public/", order=1)
+
+        content = render_robots_txt()
+
+        allow_index = content.index("Allow: /admin/public/")
+        disallow_index = content.index("Disallow: /admin/")
+        assert allow_index < disallow_index
+
+    def test_equal_length_allow_beats_disallow(self, db, settings):
+        """RFC 9309 s2.2.2: Allow wins an exact-length tie."""
+        settings.ICV_SITEMAPS_BASE_URL = ""
+        settings.ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES = []
+        settings.ICV_SITEMAPS_ROBOTS_SITEMAP_URL = ""
+
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/secret/", order=0)
+        RobotsRuleFactory(user_agent="*", directive="allow", path="/public/", order=1)
+
+        content = render_robots_txt()
+
+        allow_index = content.index("Allow: /public/")
+        disallow_index = content.index("Disallow: /secret/")
+        assert allow_index < disallow_index
+
+    def test_equal_specificity_falls_back_to_order(self, db, settings):
+        """Rules of equal specificity (same length, same directive) keep
+        ``order`` as the tiebreaker, so it still does a real job."""
+        settings.ICV_SITEMAPS_BASE_URL = ""
+        settings.ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES = []
+        settings.ICV_SITEMAPS_ROBOTS_SITEMAP_URL = ""
+
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/second/", order=1)
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/first!/", order=0)
+
+        content = render_robots_txt()
+
+        first_index = content.index("Disallow: /first!/")
+        second_index = content.index("Disallow: /second/")
+        assert first_index < second_index
+
+    def test_mixed_case_user_agents_merge_into_one_group(self, db, settings):
+        """RFC 9309 s2.2.1: the product token is case-insensitive and
+        multiple groups matching one user agent MUST combine into one."""
+        settings.ICV_SITEMAPS_BASE_URL = ""
+        settings.ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES = []
+        settings.ICV_SITEMAPS_ROBOTS_SITEMAP_URL = ""
+
+        RobotsRuleFactory(user_agent="Googlebot", directive="disallow", path="/admin/", order=0)
+        RobotsRuleFactory(user_agent="googlebot", directive="allow", path="/public/", order=1)
+
+        content = render_robots_txt()
+
+        assert content.count("User-agent:") == 1
+        assert "User-agent: Googlebot" in content
+        assert "Disallow: /admin/" in content
+        assert "Allow: /public/" in content
+
 
 # ---------------------------------------------------------------------------
 # render_ads_txt

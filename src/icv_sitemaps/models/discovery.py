@@ -26,8 +26,10 @@ class RobotsRule(BaseModel):
     """Database-driven robots.txt rule.
 
     Each rule defines a single directive (Allow or Disallow) for a specific
-    user agent. Rules are rendered in ``order`` sequence within each user
-    agent group when ``robots.txt`` is generated.
+    user agent. Rendering resolves rules within each user agent group by
+    RFC 9309 s2.2.2 longest-match precedence (most specific path pattern
+    wins, ``Allow`` wins an exact-length tie); ``order`` only breaks ties
+    between rules of equal specificity, it does not govern precedence.
     """
 
     tenant_id = models.CharField(
@@ -54,7 +56,12 @@ class RobotsRule(BaseModel):
     )
     order = models.PositiveIntegerField(
         default=0,
-        help_text=_("Sort order within the user agent group (lower = first)."),
+        help_text=_(
+            "Tiebreaker for rules of equal specificity within the user agent "
+            "group (lower = first). Rendering resolves precedence by "
+            "longest path match per RFC 9309; this field does not override "
+            "that, it only orders rules the RFC treats as equally specific."
+        ),
     )
     is_active = models.BooleanField(
         default=True,
