@@ -30,6 +30,26 @@ def make_middleware():
     return _make
 
 
+@pytest.fixture
+def make_path_middleware():
+    """Create a RedirectMiddleware whose downstream response depends on the path.
+
+    Simulates a urlconf that resolves some paths (200) and not others (404),
+    which the single-status ``make_middleware`` fixture cannot represent.
+    """
+
+    def _make(resolved_paths, resolved_status=200, unresolved_status=404):
+        from django.http import HttpResponse
+
+        def get_response(request):
+            status = resolved_status if request.path in resolved_paths else unresolved_status
+            return HttpResponse(status=status)
+
+        return RedirectMiddleware(get_response)
+
+    return _make
+
+
 @pytest.fixture(autouse=True)
 def _enable_redirects():
     """Enable redirect middleware for all tests in this module."""
@@ -65,10 +85,14 @@ class TestRedirectMiddleware:
         assert response.status_code == 302
         assert response["Location"] == "/dest/"
 
-    def test_410_gone(self, db, rf, make_middleware):
+    def test_410_gone(self, db, rf, make_path_middleware):
+        """A 410 rule is served once the urlconf has genuinely failed to
+        resolve the path (see ``TestRedirectMiddlewareGoneOn404`` for the
+        full status-code split introduced by #17).
+        """
         RedirectRuleFactory(source_pattern="/removed/", destination="", status_code=410)
 
-        middleware = make_middleware()
+        middleware = make_path_middleware(resolved_paths=set())
         request = rf.get("/removed/")
         response = middleware(request)
 
@@ -230,3 +254,110 @@ class TestRedirectMiddleware404Tracking:
         from icv_sitemaps.models.redirects import RedirectLog
 
         assert not RedirectLog.objects.exists()
+
+
+class TestRedirectMiddlewareGoneOn404:
+    """Status-code split from #17: redirects still pre-empt the urlconf,
+
+    a 410 is only served once the urlconf itself has already failed to
+    resolve the path.
+    """
+
+    def test_redirect_wins_over_a_live_view(self, db, rf, make_path_middleware):
+        """A 302 rule for a path the view resolves with 200 still wins.
+
+        This pins the capability the owner decision deliberately kept: an
+        operator-authored redirect beats the urlconf even when the target
+        page is live. Must fail if a future change gates ALL rule
+        evaluation on a 404, not just gone-rules.
+        """
+        RedirectRuleFactory(source_pattern="/promo/", destination="/summer-sale/", status_code=302)
+
+        middleware = make_path_middleware(resolved_paths={"/promo/"})
+        request = rf.get("/promo/")
+        response = middleware(request)
+
+        assert response.status_code == 302
+        assert response["Location"] == "/summer-sale/"
+
+    def test_gone_rule_does_not_shadow_a_live_view(self, db, rf, make_path_middleware):
+        """A 410 rule for a path the view resolves with 200 loses to the 200.
+
+        This is the actual defect: serving 410 for a path that demonstrably
+        exists is self-contradicting. Must fail against pre-fix code, which
+        evaluates all rules, including 410s, before get_response().
+        """
+        RedirectRuleFactory(source_pattern="/deleted-product/", destination="", status_code=410)
+
+        middleware = make_path_middleware(resolved_paths={"/deleted-product/"})
+        request = rf.get("/deleted-product/")
+        response = middleware(request)
+
+        assert response.status_code == 200
+
+    def test_gone_rule_is_served_when_the_path_genuinely_404s(self, db, rf, make_path_middleware):
+        """A 410 rule for a path that does not resolve is served as before.
+
+        hit_count and last_hit_at increment and redirect_matched fires,
+        exactly as they do for a live redirect today.
+        """
+        from icv_sitemaps.signals import redirect_matched
+
+        rule = RedirectRuleFactory(source_pattern="/deleted-product/", destination="", status_code=410)
+
+        received = []
+        redirect_matched.connect(lambda sender, **kwargs: received.append(kwargs), weak=False)
+
+        middleware = make_path_middleware(resolved_paths=set())
+        request = rf.get("/deleted-product/")
+        response = middleware(request)
+
+        assert response.status_code == 410
+
+        rule.refresh_from_db()
+        assert rule.hit_count == 1
+        assert rule.last_hit_at is not None
+
+        assert len(received) == 1
+        assert received[0]["status_code"] == 410
+        assert received[0]["path"] == "/deleted-product/"
+
+    def test_gone_match_is_not_recorded_as_a_404(self, db, rf, make_path_middleware):
+        """A path answered by a gone-rule is not double-booked as a tracked 404.
+
+        It has an answer (410), so it is not "missing" in the sense
+        ``_maybe_record_404`` tracks.
+        """
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_ENABLED", True),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE", 1.0),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_IGNORE_PATTERNS", []),
+        ):
+            RedirectRuleFactory(source_pattern="/deleted-product/", destination="", status_code=410)
+
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/deleted-product/")
+            response = middleware(request)
+
+        assert response.status_code == 410
+
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        assert not RedirectLog.objects.filter(path="/deleted-product/").exists()
+
+    def test_unmatched_404_is_still_tracked(self, db, rf, make_path_middleware):
+        """A 404 with no matching rule at all is still recorded, as today."""
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_ENABLED", True),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE", 1.0),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_IGNORE_PATTERNS", []),
+        ):
+            middleware = make_path_middleware(resolved_paths=set())
+            request = rf.get("/genuinely-missing/")
+            response = middleware(request)
+
+        assert response.status_code == 404
+
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        assert RedirectLog.objects.filter(path="/genuinely-missing/").exists()

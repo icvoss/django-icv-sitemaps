@@ -54,8 +54,10 @@ but **fully standalone**: no other ICV packages required.
   and CSV import/export
 - **404 tracking**: automatic detection of recurring 404s with hit counts and
   referrer tracking; create redirect rules directly from admin
-- **RedirectMiddleware**: opt-in middleware evaluates redirect rules before
-  Django's URL resolver; fail-open design never breaks the request cycle
+- **RedirectMiddleware**: opt-in middleware; a redirect rule
+  (301/302/307/308) is evaluated before Django's URL resolver, a 410 rule
+  only once the resolver has returned a 404, so it can never shadow a live
+  view; fail-open design never breaks the request cycle
 - **Search engine ping**: Google, Bing, Yandex notified on content changes
   (conditional on checksum comparison)
 - **Multi-tenancy**: all discovery files are tenant-scoped; sitemap paths
@@ -493,8 +495,13 @@ Site: example.com
 
 ### Redirect Rules
 
-Database-driven redirect rules evaluated by `RedirectMiddleware` before
-Django's URL resolver:
+Database-driven redirect rules evaluated by `RedirectMiddleware`. A
+301/302/307/308 rule is evaluated before Django's URL resolver, so it wins
+even for a path a view would otherwise serve: useful for a promo route or
+masking a page mid-migration. A 410 rule is different: it asserts the
+resource is permanently removed, which is incoherent for a path the
+resolver can still serve, so it is only evaluated once the resolver has
+already returned a 404. A 410 rule can never shadow a live view.
 
 ```python
 from icv_sitemaps.services import add_redirect
