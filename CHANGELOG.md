@@ -23,6 +23,39 @@
 
 ### Added
 
+- **Conditional requests and `Cache-Control` on every sitemap and
+  discovery-file view** (#32, #33). Every response from
+  `sitemap_index_view`, `sitemap_file_view`, `robots_txt_view`,
+  `llms_txt_view`, `ads_txt_view`, `app_ads_txt_view`, `security_txt_view`
+  and `humans_txt_view` now carries a strong `ETag` (a SHA-256 hash of the
+  served bytes) and honours `If-None-Match` with a bodyless 304, so a
+  crawler polling on a schedule gets a cheap 304 instead of re-transferring
+  an unchanged sitemap or discovery file on every request.
+  `sitemap_file_view` additionally emits `Last-Modified` (and honours
+  `If-Modified-Since`) when a `SitemapFile` row exists for the served
+  storage path, read from that row's genuine, persisted `generated_at`;
+  every other view omits `Last-Modified` rather than fabricate one, since
+  none has an equivalent single-row timestamp to reach for (the sitemap
+  index and every rendered discovery file either have no backing row or
+  aggregate several rows with no single "this changed last" value). Every
+  response also carries `Cache-Control`, communicating the freshness
+  opinion `ICV_SITEMAPS_CACHE_TIMEOUT` already expressed server-side to
+  crawlers, CDNs, and reverse proxies for the first time. A response
+  served from the documented render-failure fallback in `robots_txt_view`,
+  `ads_txt_view`, and `app_ads_txt_view` is deliberately excluded from
+  both: an empty robots.txt or ads.txt body produced by a rendering
+  failure must never be told to a client or an intermediate cache as
+  validated, unchanged, or safe to reuse, which would otherwise turn a
+  transient failure into a much longer-lived one.
+
+- **`ICV_SITEMAPS_HTTP_CACHE_CONTROL`** (#33), overriding or disabling the
+  `Cache-Control` header above. Empty string (the default) derives
+  `"public, max-age=<ICV_SITEMAPS_CACHE_TIMEOUT>"`. The literal value
+  `"none"` omits the header entirely. Any other non-empty string is sent
+  verbatim, for an operator who wants a directive this package does not
+  model (`stale-while-revalidate`, `s-maxage`, `must-revalidate`, and so
+  on) without a code change.
+
 - **`invalidate_robots_cache`, `invalidate_ads_cache`, `invalidate_discovery_cache`**
   (#37), extracted and exported alongside `invalidate_redirect_cache` (#29):
   `RobotsRule`, `AdsEntry` and `DiscoveryFileConfig` shared the same
