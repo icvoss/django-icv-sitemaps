@@ -529,6 +529,36 @@ with open("redirects.csv") as f:
     rows = list(csv.DictReader(f))
     result = bulk_import_redirects(rows)
     # {"created": 150, "updated": 3, "errors": []}
+
+# Bulk create (insert-only, faster for a large one-off import)
+from icv_sitemaps.services import bulk_create_redirects
+
+result = bulk_create_redirects(rows)
+# {"created": 150, "errors": []}
+```
+
+#### Raw `bulk_create` bypasses cache invalidation
+
+`RedirectRule`'s cache is invalidated by a `post_save`/`post_delete` signal
+handler, and Django's `bulk_create` emits neither signal. Writing
+`RedirectRule` rows directly with `RedirectRule.objects.bulk_create(...)`
+leaves the cached `prefix`/`regex` rule list stale until
+`ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT` expires (default 300 seconds), even
+though the rows already exist in the database. Exact-match rules are
+unaffected: `check_redirect` always resolves an exact match with a direct
+database query, never from the cache.
+
+Either use `bulk_create_redirects` above, which does one
+`bulk_create(ignore_conflicts=True)` and invalidates the cache once at the
+end, or call `RedirectRule.objects.bulk_create(...)` yourself followed by
+`invalidate_redirect_cache(tenant_id=...)`:
+
+```python
+from icv_sitemaps.services import invalidate_redirect_cache
+from icv_sitemaps.models import RedirectRule
+
+RedirectRule.objects.bulk_create([...])
+invalidate_redirect_cache(tenant_id="acme")
 ```
 
 ### Enable the Middleware
@@ -691,6 +721,8 @@ from icv_sitemaps.services import (
     check_redirect,
     add_redirect,
     bulk_import_redirects,
+    bulk_create_redirects,
+    invalidate_redirect_cache,
     record_404,
     get_top_404s,
 )

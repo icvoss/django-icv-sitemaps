@@ -22,9 +22,11 @@ from icv_sitemaps.services.generation import (
 from icv_sitemaps.services.ping import ping_search_engines
 from icv_sitemaps.services.redirects import (
     add_redirect,
+    bulk_create_redirects,
     bulk_import_redirects,
     check_redirect,
     get_top_404s,
+    invalidate_redirect_cache,
     record_404,
 )
 from icv_sitemaps.services.robots import (
@@ -63,6 +65,8 @@ __all__ = [
     "check_redirect",
     "add_redirect",
     "bulk_import_redirects",
+    "bulk_create_redirects",
+    "invalidate_redirect_cache",
     "record_404",
     "get_top_404s",
 ]

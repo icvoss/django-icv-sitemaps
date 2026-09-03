@@ -4,6 +4,28 @@
 
 ### Added
 
+- **`bulk_create_redirects`** (#29), a bulk-safe alternative to a consumer
+  calling `RedirectRule.objects.bulk_create(...)` directly. Django's
+  `bulk_create` emits no `post_save` signal, so `prefix` and `regex`
+  redirect rules written that way are invisible to the cached rule list
+  (`get_cached_redirect_rules`) until `ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT`
+  (default 300 seconds) expires, even though the row already exists in the
+  database and `check_redirect` should be serving it. Exact-match rules are
+  not affected: `check_redirect` always resolves an exact match with a
+  direct database query, never from the cache, since #16. `bulk_create_redirects`
+  takes the same row format as `bulk_import_redirects`, validates each row
+  with the same rules as `add_redirect`, writes with a single
+  `bulk_create(ignore_conflicts=True)` call, and invalidates the cache once
+  at the end rather than per row. It is insert-only (no per-row update), so
+  its summary dict has no `updated` key: `{"created": int, "errors":
+  list[dict]}`. A row colliding with an existing exact-match rule on
+  `(source_pattern, tenant_id)` is silently skipped rather than raising.
+  `invalidate_redirect_cache` is now also exported from
+  `icv_sitemaps.services`, so a consumer who writes `RedirectRule` rows
+  with a raw `bulk_create` some other way still has a documented, public
+  way to invalidate the cache themselves afterwards; see the README for the
+  raw-`bulk_create` caveat.
+
 - **`ICV_SITEMAPS_GONE_RESOLVER`** (#27), a consumer hook for gone-resolution
   on the 404 path. A dotted path to a callable taking the request and
   returning `410` or `None`, resolved the same way as

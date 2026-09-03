@@ -1759,6 +1759,105 @@ class TestBulkImportRedirects:
         assert len(result["errors"]) == 1
 
 
+class TestBulkCreateRedirects:
+    """Regression coverage for #29: bulk_create leaves the cache stale.
+
+    Scope note: #16 fixed the exact-match half of the original report.
+    check_redirect now resolves exact rules with a direct query, never
+    from the cache, so only prefix/regex rows still depend on the
+    post_save-driven cache invalidation that bulk_create never fires.
+    Every regression case below therefore uses a prefix or regex row.
+    """
+
+    def test_writes_the_rows(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+        from icv_sitemaps.services.redirects import bulk_create_redirects
+
+        rows = [
+            {"source_pattern": "/blog/", "destination": "/articles/", "match_type": "prefix"},
+            {"source_pattern": r"/p/\d+/", "destination": "/products/", "match_type": "regex"},
+        ]
+        result = bulk_create_redirects(rows)
+
+        assert result["created"] == 2
+        assert result["errors"] == []
+        assert RedirectRule.objects.filter(source_pattern="/blog/").exists()
+        assert RedirectRule.objects.filter(source_pattern=r"/p/\d+/").exists()
+
+    def test_invalidates_cache_exactly_once(self, db):
+        from icv_sitemaps.services import redirects as redirects_module
+        from icv_sitemaps.services.redirects import bulk_create_redirects
+
+        rows = [
+            {"source_pattern": "/blog/", "destination": "/articles/", "match_type": "prefix"},
+            {"source_pattern": "/shop/", "destination": "/store/", "match_type": "prefix"},
+            {"source_pattern": "/help/", "destination": "/support/", "match_type": "prefix"},
+        ]
+        with patch.object(
+            redirects_module, "invalidate_redirect_cache", wraps=redirects_module.invalidate_redirect_cache
+        ) as spy:
+            bulk_create_redirects(rows)
+
+        spy.assert_called_once_with(tenant_id="")
+
+    def test_new_prefix_rule_is_immediately_visible_to_check_redirect(self, db):
+        """The actual regression: this fails if the invalidation call is removed.
+
+        get_cached_redirect_rules() populates the cache on the first call
+        (a miss), which would otherwise mask a subsequent stale-cache bug
+        for the rest of the test. Priming it first, then bulk-creating,
+        proves the cache is actually invalidated rather than merely never
+        having been read yet.
+        """
+        from icv_sitemaps.services.redirects import bulk_create_redirects, check_redirect
+
+        assert check_redirect("/blog/2024/post/") is None
+
+        bulk_create_redirects([{"source_pattern": "/blog/", "destination": "/articles/", "match_type": "prefix"}])
+
+        rule = check_redirect("/blog/2024/post/")
+        assert rule is not None
+        assert rule["destination"] == "/articles/"
+
+    def test_invalid_rows_land_in_errors_without_aborting_batch(self, db):
+        from icv_sitemaps.services.redirects import bulk_create_redirects
+
+        rows = [
+            {"source_pattern": "/ok/", "destination": "/fine/", "match_type": "prefix"},
+            {"source_pattern": "/bad/", "destination": "/x/", "status_code": 999, "match_type": "prefix"},
+            {"source_pattern": "/also-ok/", "destination": "/also-fine/", "match_type": "prefix"},
+        ]
+        result = bulk_create_redirects(rows)
+
+        assert result["created"] == 2
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["row"] == 1
+
+    def test_scopes_to_tenant(self, db):
+        from icv_sitemaps.models.redirects import RedirectRule
+        from icv_sitemaps.services.redirects import bulk_create_redirects
+
+        bulk_create_redirects(
+            [{"source_pattern": "/blog/", "destination": "/articles/", "match_type": "prefix"}],
+            tenant_id="acme",
+        )
+
+        assert RedirectRule.objects.filter(tenant_id="acme", source_pattern="/blog/").exists()
+        assert not RedirectRule.objects.filter(tenant_id="", source_pattern="/blog/").exists()
+
+    def test_conflicting_exact_row_is_skipped_not_raised(self, db):
+        from icv_sitemaps.services.redirects import add_redirect, bulk_create_redirects
+
+        add_redirect("/dup/", "/first/", 301, match_type="exact")
+
+        result = bulk_create_redirects([{"source_pattern": "/dup/", "destination": "/second/", "match_type": "exact"}])
+
+        # ignore_conflicts=True: the colliding row is silently skipped, not
+        # raised and not counted as created.
+        assert result["created"] == 0
+        assert result["errors"] == []
+
+
 class TestRecord404:
     def test_creates_entry(self, db):
         from icv_sitemaps.services.redirects import record_404

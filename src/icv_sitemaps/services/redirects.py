@@ -209,6 +209,45 @@ def invalidate_redirect_cache(*, tenant_id: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
+_VALID_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308, 410})
+_VALID_REDIRECT_MATCH_TYPES = frozenset({"exact", "prefix", "regex"})
+
+
+def _validate_redirect_fields(
+    source_pattern: str,
+    destination: str,
+    status_code: int,
+    match_type: str,
+) -> tuple[str, int]:
+    """Validate one redirect row's fields, returning the normalised destination and status_code.
+
+    Shared by add_redirect and bulk_create_redirects so both apply the same
+    rules: a valid status_code, a valid match_type, a non-empty
+    source_pattern, and a required destination unless status_code == 410
+    (in which case destination is forced empty regardless of what was
+    passed in).
+
+    Raises:
+        ValueError: If any field is invalid.
+    """
+    if status_code not in _VALID_REDIRECT_STATUS_CODES:
+        raise ValueError(f"status_code must be one of {sorted(_VALID_REDIRECT_STATUS_CODES)}, got: {status_code!r}")
+
+    if match_type not in _VALID_REDIRECT_MATCH_TYPES:
+        raise ValueError(f"match_type must be one of {sorted(_VALID_REDIRECT_MATCH_TYPES)}, got: {match_type!r}")
+
+    if status_code != 410 and not destination:
+        raise ValueError("destination is required for non-410 redirects.")
+
+    if status_code == 410:
+        destination = ""
+
+    if not source_pattern:
+        raise ValueError("source_pattern must not be empty.")
+
+    return destination, status_code
+
+
 def add_redirect(
     source_pattern: str,
     destination: str,
@@ -244,22 +283,7 @@ def add_redirect(
     """
     from icv_sitemaps.models.redirects import RedirectRule
 
-    valid_status_codes = {301, 302, 307, 308, 410}
-    if status_code not in valid_status_codes:
-        raise ValueError(f"status_code must be one of {sorted(valid_status_codes)}, got: {status_code!r}")
-
-    valid_match_types = {"exact", "prefix", "regex"}
-    if match_type not in valid_match_types:
-        raise ValueError(f"match_type must be one of {sorted(valid_match_types)}, got: {match_type!r}")
-
-    if status_code != 410 and not destination:
-        raise ValueError("destination is required for non-410 redirects.")
-
-    if status_code == 410:
-        destination = ""
-
-    if not source_pattern:
-        raise ValueError("source_pattern must not be empty.")
+    destination, status_code = _validate_redirect_fields(source_pattern, destination, status_code, match_type)
 
     if not name:
         name = f"{source_pattern} \u2192 {destination or '410'}"
@@ -329,6 +353,108 @@ def bulk_import_redirects(
     invalidate_redirect_cache(tenant_id=tenant_id)
 
     return {"created": created, "updated": updated, "errors": errors}
+
+
+def bulk_create_redirects(
+    rows: list[dict],
+    *,
+    tenant_id: str = "",
+    source: str = "import",
+) -> dict:
+    """Bulk-create redirect rules, invalidating the cache once at the end.
+
+    This is the bulk-safe alternative to a consumer calling
+    ``RedirectRule.objects.bulk_create(...)`` directly. Django's
+    ``bulk_create`` emits no ``post_save`` signal, so a rule written that
+    way is invisible to a cached prefix/regex rule list
+    (:func:`get_cached_redirect_rules`) until
+    ``ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT`` (default 300 seconds) expires,
+    even though the row exists in the database (#29). Exact-match rules are
+    unaffected by this gap: :func:`check_redirect` always resolves an exact
+    match with a direct database query, never from the cache, so a
+    ``bulk_create`` of exact rules has never gone stale (fixed as a side
+    effect of #16).
+
+    Accepts the same row format as :func:`bulk_import_redirects`: each dict
+    needs at minimum ``source_pattern`` and ``destination``. Optional keys:
+    ``status_code``, ``match_type``, ``name``. Unlike
+    ``bulk_import_redirects``, which loops with ``update_or_create`` and so
+    can update an existing row, this function is insert-only: it never
+    updates a row that already exists, which is why the returned summary
+    has no ``updated`` key.
+
+    Each row is validated with the same rules :func:`add_redirect` applies
+    (via the shared :func:`_validate_redirect_fields` helper): a valid
+    ``status_code``, a valid ``match_type``, a non-empty ``source_pattern``,
+    and a required ``destination`` unless ``status_code == 410``. A row
+    that fails validation is appended to the returned ``errors`` list with
+    its index and does not abort the batch, matching
+    ``bulk_import_redirects``'s per-row error handling.
+
+    Conflict handling: an ``exact``-type row whose ``(source_pattern,
+    tenant_id)`` collides with an existing row violates the partial unique
+    constraint ``icv_sm_rdr_src_tnt_exact_uniq``. This function passes
+    ``ignore_conflicts=True`` to ``bulk_create``, so a colliding row is
+    silently skipped (not updated, not raised) rather than aborting the
+    whole batch with an ``IntegrityError``. ``prefix`` and ``regex`` rows
+    carry no uniqueness constraint and never conflict.
+
+    Because ``ignore_conflicts=True`` does not reliably populate ``pk`` on
+    every backend (per Django's own documentation), the objects returned by
+    ``bulk_create`` cannot be trusted to say which rows were actually
+    written. The returned ``created`` count is therefore computed as the
+    increase in matching-tenant row count before and after the call, which
+    is honest about what was written but is only accurate for
+    non-concurrent use of this function against the same tenant (a
+    concurrent writer changing the same tenant's row count between the two
+    counts would skew it). This matches the bulk-import workflow this
+    function targets: a single import process, not concurrent bulk loads
+    racing each other.
+
+    Returns:
+        A summary dict: ``{"created": int, "errors": list[dict]}``.
+    """
+    from icv_sitemaps.models.redirects import RedirectRule
+
+    validated_rows: list[RedirectRule] = []
+    errors: list[dict] = []
+
+    for i, row in enumerate(rows):
+        try:
+            source_pattern = row["source_pattern"]
+            destination = row.get("destination", "")
+            status_code = int(row.get("status_code", 301))
+            match_type = row.get("match_type", "exact")
+            name = row.get("name", f"{source_pattern} → {destination or '410'}")
+
+            destination, status_code = _validate_redirect_fields(source_pattern, destination, status_code, match_type)
+
+            validated_rows.append(
+                RedirectRule(
+                    name=name,
+                    match_type=match_type,
+                    source_pattern=source_pattern,
+                    destination=destination,
+                    status_code=status_code,
+                    tenant_id=tenant_id,
+                    source=source,
+                    is_active=True,
+                )
+            )
+        except Exception as exc:
+            errors.append({"row": i, "error": str(exc), "data": row})
+
+    before_count = RedirectRule.objects.filter(tenant_id=tenant_id).count()
+
+    if validated_rows:
+        RedirectRule.objects.bulk_create(validated_rows, ignore_conflicts=True)
+
+    after_count = RedirectRule.objects.filter(tenant_id=tenant_id).count()
+    created = after_count - before_count
+
+    invalidate_redirect_cache(tenant_id=tenant_id)
+
+    return {"created": created, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
