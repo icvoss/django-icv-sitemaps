@@ -1572,6 +1572,127 @@ class TestCheckRedirect:
         assert result["status_code"] == 302
         assert result["destination"] == "/products/"
 
+    def test_exact_match_resolved_by_direct_query_not_cached_scan(self, db, django_assert_num_queries):
+        """An exact match is resolved by a single direct query.
+
+        Regression test for #16: previously, every lookup loaded the full
+        cached rule list and scanned it in Python. A large number of
+        unrelated prefix rules must not add queries or scan cost to an
+        exact-match hit: the exact lookup is a single indexed query, found
+        before the cached list is ever built or read.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+        from icv_sitemaps.testing.factories import RedirectRuleFactory
+
+        for i in range(50):
+            RedirectRuleFactory(
+                source_pattern=f"/prefix-{i}/",
+                match_type="prefix",
+                destination=f"/dest-{i}/",
+            )
+
+        add_redirect("/exact-target/", "/new/", 301, match_type="exact")
+
+        with django_assert_num_queries(1):
+            result = check_redirect("/exact-target/")
+
+        assert result is not None
+        assert result["destination"] == "/new/"
+
+    def test_exact_beats_overlapping_prefix_via_direct_query(self, db):
+        """An exact rule wins over an overlapping prefix rule.
+
+        Same documented precedence as test_exact_beats_prefix_regardless_of_priority,
+        but exercised through the direct exact-match query path rather than
+        the cached list.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/path/", "/prefix-destination/", 301, match_type="prefix")
+        add_redirect("/path/", "/exact-destination/", 302, match_type="exact")
+
+        result = check_redirect("/path/")
+        assert result["destination"] == "/exact-destination/"
+
+    def test_exact_gone_rule_excluded_by_live_status_codes(self, db):
+        """An exact 410 rule must not be returned when status_codes excludes it.
+
+        This is the correctness requirement behind #16's fix: the direct
+        exact-match query must apply the same status_codes restriction as
+        the cached-list path, in the database query itself. Without that,
+        an exact-match 410 rule would short-circuit and return before the
+        middleware's pre-response call (which passes only the live-redirect
+        status codes) ever consulted status_codes at all, silently
+        reverting the #17 split between live redirects and gone rules.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/deleted-product/", "", 410, match_type="exact")
+
+        live_result = check_redirect("/deleted-product/", status_codes=frozenset({301, 302, 307, 308}))
+        assert live_result is None
+
+        gone_result = check_redirect("/deleted-product/", status_codes=frozenset({410}))
+        assert gone_result is not None
+        assert gone_result["status_code"] == 410
+
+    def test_cached_list_excludes_exact_rules(self, db):
+        """Exact rules are never included in the cached prefix/regex list.
+
+        They are resolved by a direct query in :func:`check_redirect`
+        instead, so including them in the cache would be dead weight that
+        scales with the number of machine-generated exact rules.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
+
+        add_redirect("/exact/", "/exact-dest/", 301, match_type="exact")
+        add_redirect("/blog/", "/articles/", 301, match_type="prefix")
+        add_redirect(r"/product/\d+/", "/products/", 301, match_type="regex")
+
+        rules = get_cached_redirect_rules()
+        match_types = {rule["match_type"] for rule in rules}
+        assert "exact" not in match_types
+        assert match_types == {"prefix", "regex"}
+
+    def test_cached_list_still_orders_prefix_before_regex(self, db):
+        """Prefix still beats regex regardless of priority, in the exact-free cache.
+
+        Uses a reversed priority (regex numerically lower) so a fallback to
+        pk ordering could not accidentally produce the right answer.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect(r"/prod/\d+/", "/regex-destination/", 301, priority=0, match_type="regex")
+        add_redirect("/prod/", "/prefix-destination/", 302, priority=10, match_type="prefix")
+
+        result = check_redirect("/prod/123/")
+        assert result["destination"] == "/prefix-destination/"
+
+    def test_exact_lookup_respects_tenant_scoping(self, db):
+        """The direct exact-match query is still scoped by tenant_id."""
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/path/", "/tenant-a/", 301, match_type="exact", tenant_id="a")
+        assert check_redirect("/path/", tenant_id="a") is not None
+        assert check_redirect("/path/", tenant_id="b") is None
+
+    def test_get_cached_redirect_rules_uses_v3_cache_key(self, db):
+        """The cached list is stored under the v3 cache key.
+
+        The cached list's contents changed (exact rules excluded), so the
+        cache key must be versioned to v3: a v2 entry from a process
+        running the pre-fix code would hold exact rules and be served
+        forever under the new code's assumption that it does not.
+        """
+        from icv_sitemaps.cache import safe_get
+        from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
+
+        add_redirect("/blog/", "/articles/", 301, match_type="prefix")
+        get_cached_redirect_rules()
+
+        assert safe_get("icv_sitemaps:redirects:v3:") is not None
+        assert safe_get("icv_sitemaps:redirects:v2:") is None
+
 
 class TestAddRedirect:
     def test_creates_rule(self, db):
@@ -1750,7 +1871,10 @@ class TestGetCachedRedirectRulesSurvivesCacheFailure:
 
         from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
 
-        add_redirect("/old/", "/new/", 301)
+        # get_cached_redirect_rules deliberately excludes match_type="exact"
+        # rules (#16); use a prefix rule so it is actually present in the
+        # list this function builds and caches.
+        add_redirect("/old/", "/new/", 301, match_type="prefix")
 
         with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
             rules = get_cached_redirect_rules()
@@ -1763,7 +1887,10 @@ class TestGetCachedRedirectRulesSurvivesCacheFailure:
 
         from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
 
-        add_redirect("/old/", "/new/", 301)
+        # get_cached_redirect_rules deliberately excludes match_type="exact"
+        # rules (#16); use a prefix rule so it is actually present in the
+        # list this function builds and caches.
+        add_redirect("/old/", "/new/", 301, match_type="prefix")
 
         with patch.object(cache, "set", side_effect=ConnectionError("redis down")):
             rules = get_cached_redirect_rules()

@@ -22,12 +22,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
-    """Return active redirect rules as a cache-friendly list of dicts.
+    """Return active, non-exact redirect rules as a cache-friendly list of dicts.
 
-    Rules are sorted by match type first (exact, then prefix, then regex),
-    then by priority (ascending), then by primary key as a stable final
-    tiebreaker. This matches the precedence documented on
-    :func:`check_redirect`: an exact rule always beats a prefix rule, and a
+    Only ``prefix`` and ``regex`` rules are included. ``exact`` rules are
+    deliberately excluded: :func:`check_redirect` always resolves an exact
+    match with a direct database query (see :func:`_get_exact_redirect_rule`)
+    before this cached list is ever built or read, so an ``exact`` rule
+    would never be consulted from it. This keeps the cache payload
+    proportional to the number of hand-authored prefix/regex rules rather
+    than to the (potentially very large) number of machine-generated
+    exact-match rules, such as a job that creates a 410 tombstone for every
+    deleted catalogue item (#16).
+
+    Rules are sorted by match type first (prefix, then regex), then by
+    priority (ascending), then by primary key as a stable final tiebreaker.
+    This matches the precedence documented on :func:`check_redirect`: a
     prefix rule always beats a regex rule, regardless of ``priority``.
     ``priority`` only orders rules within the same match type.
 
@@ -41,7 +50,7 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
     from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.conf import ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT
 
-    cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
+    cache_key = f"icv_sitemaps:redirects:v3:{tenant_id}"
     cached = safe_get(cache_key)
     if cached is not None:
         return cached
@@ -49,16 +58,16 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
     from icv_sitemaps.models.redirects import RedirectRule
 
     match_type_rank = Case(
-        When(match_type="exact", then=0),
-        When(match_type="prefix", then=1),
-        When(match_type="regex", then=2),
-        default=3,
+        When(match_type="prefix", then=0),
+        When(match_type="regex", then=1),
+        default=2,
         output_field=IntegerField(),
     )
 
     rules = list(
         RedirectRule.objects.active()
         .filter(tenant_id=tenant_id)
+        .exclude(match_type="exact")
         .order_by(match_type_rank, "priority", "pk")
         .values(
             "id",
@@ -72,6 +81,58 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
 
     safe_set(cache_key, rules, timeout=ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT)
     return rules
+
+
+def _get_exact_redirect_rule(
+    path: str,
+    *,
+    tenant_id: str = "",
+    status_codes: frozenset[int] | None = None,
+) -> dict | None:
+    """Look up an exact-match redirect rule directly, bypassing the cache.
+
+    Queries only rows with ``match_type="exact"`` and
+    ``source_pattern=path``. ``source_pattern`` carries ``db_index=True``
+    (see ``models/redirects.py``), so this filter is indexed on every
+    supported database backend, not only where the partial unique
+    constraint ``icv_sm_rdr_src_tnt_exact_uniq`` happens to also apply
+    (that constraint is postgres-shaped and does not exist on every
+    backend). No new index is added: the plain column index already makes
+    this a constant-time lookup regardless of how many exact rules exist,
+    which is the fix for #16.
+
+    ``status_codes``, when given, is applied inside this query (not after)
+    so that a rule excluded by the filter can never be returned here. This
+    matters because :func:`check_redirect` is called once before the
+    urlconf with only live-redirect status codes and once after a 404 with
+    only the 410 status code (see ``middleware.py``); an exact-match 410
+    rule must never short-circuit the pre-response call, or it would
+    pre-empt a URL the urlconf can still resolve.
+
+    The unique constraint means at most one active-or-inactive row can
+    exist for a given ``(source_pattern, tenant_id)`` with
+    ``match_type="exact"``; ``.active()`` further narrows by
+    ``is_active``/``expires_at``, so ``.first()`` never has more than one
+    active candidate to choose between in practice.
+    """
+    from icv_sitemaps.models.redirects import RedirectRule
+
+    queryset = RedirectRule.objects.active().filter(
+        tenant_id=tenant_id,
+        match_type="exact",
+        source_pattern=path,
+    )
+    if status_codes is not None:
+        queryset = queryset.filter(status_code__in=status_codes)
+
+    return queryset.values(
+        "id",
+        "match_type",
+        "source_pattern",
+        "destination",
+        "status_code",
+        "preserve_query_string",
+    ).first()
 
 
 def check_redirect(
@@ -88,13 +149,23 @@ def check_redirect(
     exact rule always wins over an overlapping prefix or regex rule,
     regardless of priority.
 
+    An exact match is resolved first via a single direct database query
+    (see :func:`_get_exact_redirect_rule`), independent of the cached rule
+    list, so its cost does not depend on how many exact rules exist. Only
+    when no exact rule matches does evaluation fall back to the cached list
+    of prefix/regex rules, scanned in match-type-then-priority order.
+
     ``status_codes`` restricts evaluation to rules whose ``status_code`` is
-    in the given set, applied *before* matching so that a filtered-out rule
-    can never suppress a match a lower-precedence rule would otherwise win.
-    Defaults to ``None``, meaning all rules are considered, which is the
-    behaviour this function has always had; existing callers are
-    unaffected.
+    in the given set, applied *before* matching (in the exact-match query
+    and again on the cached list) so that a filtered-out rule can never
+    suppress a match a lower-precedence rule would otherwise win. Defaults
+    to ``None``, meaning all rules are considered, which is the behaviour
+    this function has always had; existing callers are unaffected.
     """
+    exact_rule = _get_exact_redirect_rule(path, tenant_id=tenant_id, status_codes=status_codes)
+    if exact_rule is not None:
+        return exact_rule
+
     rules = get_cached_redirect_rules(tenant_id=tenant_id)
 
     if status_codes is not None:
@@ -129,7 +200,7 @@ def invalidate_redirect_cache(*, tenant_id: str = "") -> None:
     """Delete the cached redirect rules for *tenant_id*."""
     from icv_sitemaps.cache import safe_delete
 
-    cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
+    cache_key = f"icv_sitemaps:redirects:v3:{tenant_id}"
     safe_delete(cache_key)
 
 
