@@ -33,13 +33,16 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
 
     The cache is invalidated by signal handlers in ``handlers.py`` whenever
     a rule is saved or deleted.
-    """
-    from django.core.cache import cache
 
+    Treats the cache as an optimisation: a backend failure on read or
+    write falls through to (or simply skips caching) a fresh database
+    query rather than raising.
+    """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.conf import ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT
 
     cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
-    cached = cache.get(cache_key)
+    cached = safe_get(cache_key)
     if cached is not None:
         return cached
 
@@ -67,7 +70,7 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
         )
     )
 
-    cache.set(cache_key, rules, timeout=ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT)
+    safe_set(cache_key, rules, timeout=ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT)
     return rules
 
 
@@ -109,10 +112,10 @@ def _rule_matches(rule: dict, path: str) -> bool:
 
 def invalidate_redirect_cache(*, tenant_id: str = "") -> None:
     """Delete the cached redirect rules for *tenant_id*."""
-    from django.core.cache import cache
+    from icv_sitemaps.cache import safe_delete
 
     cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
-    cache.delete(cache_key)
+    safe_delete(cache_key)
 
 
 # ---------------------------------------------------------------------------

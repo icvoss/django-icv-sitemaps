@@ -1,5 +1,7 @@
 """Tests for icv-sitemaps views."""
 
+from unittest.mock import patch
+
 import pytest
 from django.core.cache import cache
 from django.test import Client
@@ -280,3 +282,180 @@ class TestSitemapIndexView:
 
         assert response.status_code == 200
         assert "xml" in response["Content-Type"]
+
+
+# ---------------------------------------------------------------------------
+# Cache resilience (#9)
+#
+# tests/settings.py sets ICV_SITEMAPS_CACHE_TIMEOUT = 0, and per Django's
+# documented cache semantics a timeout of 0 makes the value expire
+# immediately, so it can never be observed as a cache hit. Any test here that
+# needs to prove a value was actually served from the cache (rather than
+# regenerated) patches icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT directly,
+# because conf.py reads settings at import time and call sites re-import the
+# module-level name inside the function body specifically so this patch
+# target works; django.test.override_settings and the pytest-django
+# `settings` fixture are silent no-ops for these names.
+# ---------------------------------------------------------------------------
+
+
+class TestCacheResilience:
+    def test_robots_txt_returns_200_when_cache_get_raises(self, client, db):
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/")
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert b"Disallow: /admin/" in response.content
+
+    def test_robots_txt_returns_200_when_cache_set_raises(self, client, db):
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/")
+
+        with patch.object(cache, "set", side_effect=ConnectionError("redis down")):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert b"Disallow: /admin/" in response.content
+
+    def test_ads_txt_returns_200_when_cache_get_raises(self, client, db):
+        AdsEntryFactory(domain="google.com", publisher_id="pub-123", relationship="DIRECT")
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/ads.txt")
+
+        assert response.status_code == 200
+        assert b"google.com, pub-123, DIRECT" in response.content
+
+    def test_ads_txt_returns_200_when_cache_set_raises(self, client, db):
+        AdsEntryFactory(domain="google.com", publisher_id="pub-123", relationship="DIRECT")
+
+        with patch.object(cache, "set", side_effect=ConnectionError("redis down")):
+            response = client.get("/ads.txt")
+
+        assert response.status_code == 200
+        assert b"google.com, pub-123, DIRECT" in response.content
+
+    def test_app_ads_txt_returns_200_when_cache_raises(self, client, db):
+        AdsEntryFactory(domain="app.com", publisher_id="app-1", relationship="DIRECT", is_app_ads=True)
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/app-ads.txt")
+
+        assert response.status_code == 200
+        assert b"app.com" in response.content
+
+    def test_llms_txt_returns_200_when_cache_get_raises(self, client, db):
+        DiscoveryFileConfigFactory(file_type="llms_txt", content="# llms.txt\nAllow: *")
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/llms.txt")
+
+        assert response.status_code == 200
+        assert b"# llms.txt" in response.content
+
+    def test_llms_txt_returns_200_when_cache_set_raises(self, client, db):
+        DiscoveryFileConfigFactory(file_type="llms_txt", content="# llms.txt\nAllow: *")
+
+        with patch.object(cache, "set", side_effect=ConnectionError("redis down")):
+            response = client.get("/llms.txt")
+
+        assert response.status_code == 200
+        assert b"# llms.txt" in response.content
+
+    def test_security_txt_returns_200_when_cache_raises(self, client, db):
+        DiscoveryFileConfigFactory(
+            file_type="security_txt",
+            content="Contact: mailto:security@example.com",
+        )
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/.well-known/security.txt")
+
+        assert response.status_code == 200
+        assert b"Contact:" in response.content
+
+    def test_humans_txt_returns_200_when_cache_raises(self, client, db):
+        DiscoveryFileConfigFactory(file_type="humans_txt", content="/* TEAM */\nNigel Copley")
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            response = client.get("/humans.txt")
+
+        assert response.status_code == 200
+        assert b"TEAM" in response.content
+
+    def test_robots_txt_serves_from_cache_without_hitting_the_database_again(self, client, db, settings):
+        """Prove the cache is genuinely consulted, not merely tolerated.
+
+        A non-zero timeout is required to observe a real hit: with the test
+        suite's default ICV_SITEMAPS_CACHE_TIMEOUT = 0 every value expires
+        immediately and this would pass for the wrong reason.
+
+        The second change must NOT go through the ORM's ``save()``/``create()``
+        path: ``RobotsRule``'s ``post_save`` signal (see ``handlers.py``)
+        correctly busts this very cache key, so creating a second rule via
+        the factory would invalidate the cache for the right reason and the
+        test would not be exercising a cache hit at all. A queryset
+        ``.update()`` changes the row without emitting ``post_save``, which
+        is the only way to prove the second request is served from cache
+        rather than regenerated.
+        """
+        from icv_sitemaps.models.discovery import RobotsRule
+
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT", 3600):
+            rule = RobotsRuleFactory(user_agent="*", directive="disallow", path="/first/")
+            first = client.get("/robots.txt")
+            assert b"Disallow: /first/" in first.content
+
+            # Mutate the row directly, bypassing save() so no post_save
+            # signal fires and the cache is left untouched.
+            RobotsRule.objects.filter(pk=rule.pk).update(path="/second/")
+            second = client.get("/robots.txt")
+
+        assert second.status_code == 200
+        assert b"Disallow: /first/" in second.content
+        assert b"Disallow: /second/" not in second.content
+
+    def test_robots_txt_render_failure_does_not_poison_the_cache(self, client, db):
+        """A render failure falling back to "" must not be cached.
+
+        An empty robots.txt means "allow everything", the opposite of a
+        restrictive ruleset that failed to render, so caching that empty
+        fallback for the full timeout would be worse than not caching at
+        all.
+        """
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT", 3600):
+            with patch(
+                "icv_sitemaps.services.robots.render_robots_txt",
+                side_effect=RuntimeError("boom"),
+            ):
+                failed = client.get("/robots.txt")
+
+            assert failed.status_code == 200
+            assert failed.content == b""
+
+            # Now that rendering works again, the view must regenerate
+            # rather than serve the previously-failed empty body, proving
+            # nothing was cached under the failure.
+            RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/")
+            recovered = client.get("/robots.txt")
+
+        assert recovered.status_code == 200
+        assert b"Disallow: /admin/" in recovered.content
+
+    def test_ads_txt_render_failure_does_not_poison_the_cache(self, client, db):
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT", 3600):
+            with patch(
+                "icv_sitemaps.services.ads.render_ads_txt",
+                side_effect=RuntimeError("boom"),
+            ):
+                failed = client.get("/ads.txt")
+
+            assert failed.status_code == 200
+            assert failed.content == b""
+
+            AdsEntryFactory(domain="google.com", publisher_id="pub-123", relationship="DIRECT")
+            recovered = client.get("/ads.txt")
+
+        assert recovered.status_code == 200
+        assert b"google.com, pub-123, DIRECT" in recovered.content

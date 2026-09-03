@@ -110,8 +110,7 @@ def add_ads_entry(
             ``comment``, or any string value passed via ``**kwargs``
             contains a newline character.
     """
-    from django.core.cache import cache
-
+    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import AdsEntry
 
     relationship_upper = relationship.upper()
@@ -149,6 +148,6 @@ def add_ads_entry(
 
     # Invalidate the appropriate cache key
     cache_key = f"icv_sitemaps:app_ads_txt:{tenant_id}" if is_app_ads else f"icv_sitemaps:ads_txt:{tenant_id}"
-    cache.delete(cache_key)
+    safe_delete(cache_key)
 
     return entry

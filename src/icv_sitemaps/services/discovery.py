@@ -114,8 +114,7 @@ def set_discovery_file_content(
             ``Expires`` fields. ``llms_txt`` and ``humans_txt`` content is
             not validated, as no standard mandates their shape.
     """
-    from django.core.cache import cache
-
+    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import DiscoveryFileConfig
 
     if file_type == "security_txt":
@@ -138,6 +137,6 @@ def set_discovery_file_content(
             config.save(update_fields=list(defaults.keys()))
 
     cache_key = f"icv_sitemaps:discovery:{file_type}:{tenant_id}"
-    cache.delete(cache_key)
+    safe_delete(cache_key)
 
     return config

@@ -37,6 +37,44 @@
   populated by a pre-#24 process (holding the old priority-only ordering)
   cannot be served after upgrade; it is simply missed and rebuilt with the
   new ordering on first read.
+- **An unreachable cache backend could turn a read into a 500 and a write
+  into a failed save** (#9). The issue as filed named two unguarded
+  `cache.get`/`cache.set` calls in `views.py`; an audit of the whole
+  package found 26 call sites, not two, and the worst were not in views at
+  all. All 26 are now fixed. `/robots.txt`, `/llms.txt`, `/ads.txt`,
+  `/app-ads.txt`, `/.well-known/security.txt` and `/humans.txt` (6 views,
+  12 calls) previously raised straight out of the view when the cache
+  backend raised on read or write, for example
+  `django_redis.cache.RedisCache` with no `IGNORE_EXCEPTIONS` against an
+  unreachable Redis. Worse, the `post_save`/`post_delete` signal handlers
+  that invalidate those caches when a `RobotsRule`, `AdsEntry`,
+  `DiscoveryFileConfig` or `RedirectRule` changes (8 calls in
+  `handlers.py`) called `cache.delete()` unguarded too, so an unreachable
+  cache backend made *saving any of those models raise*, in the admin and
+  in any other consumer code path, a write-side failure the original
+  report never mentioned. The same pattern was also present in
+  `get_cached_redirect_rules`/`invalidate_redirect_cache`
+  (`services/redirects.py`, 3 calls) and in the cache invalidation done by
+  `add_robots_rule()`, `add_ads_entry()` and `set_discovery_file_content()`
+  (`services/robots.py`, `services/ads.py`, `services/discovery.py`, 1
+  call each). The cache is now treated as an optimisation, never a
+  dependency, via a new internal `icv_sitemaps.cache` module: a failed
+  `get` is treated as a cache miss (the view regenerates the content), a
+  failed `set` is swallowed (the value is simply not cached), and a
+  failed `delete` is logged at `WARNING` (not swallowed quietly, since it
+  leaves stale content served for up to the configured cache timeout,
+  which is a correctness problem rather than a performance one). Also
+  fixed in the same views: `robots_txt_view`, `ads_txt_view` and
+  `app_ads_txt_view` already caught a rendering failure and fell back to
+  an empty body, but then cached that empty string for the full timeout;
+  for `/robots.txt` an empty body means "allow everything", the opposite
+  of a restrictive ruleset that failed to render. A render failure is
+  still served (as an empty body) but is no longer cached. Out of scope:
+  `sitemap_index_view`'s storage calls are already wrapped in a broad
+  `except Exception` ending in `Http404` and were not touched; the
+  genuinely unguarded storage escapes are in `generate_section` and
+  `delete_section` (commands/tasks, not views) and are left for a
+  follow-up.
 
 - **ads.txt and app-ads.txt output was injectable via a stored newline**
   (#18). `render_ads_txt` interpolated `AdsEntry.domain`, `publisher_id`,
