@@ -25,12 +25,13 @@
   `bulk_create()` all bypassed it), the same check is now also enforced on
   the model itself: `domain`, `publisher_id`, `certification_id` and
   `comment` each carry a `RegexValidator`, and `AdsEntry.clean()` raises a
-  `ValidationError` naming the offending field. A migration adds the new
-  field validators. On render, `render_ads_txt()` now checks each entry's
-  fields before emitting its line: a row with an embedded newline is
-  skipped (not stripped, which would silently turn a forged record into a
-  differently shaped, valid-looking one) and a warning is logged naming
-  the entry so an operator can find and fix it.
+  `ValidationError` naming the offending field. A migration
+  (`0007_ads_entry_newline_validators`) adds the new field validators. On
+  render, `render_ads_txt()` now checks each entry's fields before
+  emitting its line: a row with an embedded newline is skipped (not
+  stripped, which would silently turn a forged record into a differently
+  shaped, valid-looking one) and a warning is logged naming the entry so
+  an operator can find and fix it.
 
 - **Empty ads.txt / app-ads.txt served a zero-byte body** (#22). IAB
   ads.txt v1.1 s3.2.1 deprecated the empty-file method for declaring "no
@@ -86,7 +87,7 @@
   behaviour change for rule sets without overlapping paths. `order` still
   has a real job: it is now the tiebreaker between rules of equal
   specificity, and `RobotsRule.order`'s help text has been reworded to
-  describe that (a new migration, `0006_alter_robotsrule_order`, ships the
+  describe that (a new migration, `0008_alter_robotsrule_order`, ships the
   `help_text` change).
 
 - **User-agent groups now fold case-insensitively** (#21), per RFC 9309's
@@ -130,6 +131,21 @@
   not overwrite; this is no longer claimed to be fully atomic there, only
   that a failed *upload* cannot destroy the previous file.
 
+### Upgrading from 0.7.x
+
+Consumers jumping straight from 0.7.x to 1.0.0 apply the following schema
+change, introduced in the intermediate 0.8.0 release and easy to miss
+without reading that entry:
+
+- `0005_sitemapsection_section_type_and_more` (0.8.0): adds
+  `SitemapSection.section_type` and widens `model_path` to
+  blank-by-default.
+
+This change is safe to apply: `section_type` carries a default
+(`"model"`), so existing rows need no backfilling, and `model_path` only
+widens (from required to blank-by-default), so no existing value is
+narrowed or rejected.
+
 ## [0.8.0] - 2026-07-19
 
 ### Added
@@ -150,6 +166,8 @@
   silently (a static section has no model to hang `post_save`/
   `post_delete` on).
 - `StaticSitemapSectionFactory` in `icv_sitemaps.testing`.
+- Migration `0005_sitemapsection_section_type_and_more` adds `section_type`
+  and widens `model_path` to blank-by-default.
 
 ### Changed
 
