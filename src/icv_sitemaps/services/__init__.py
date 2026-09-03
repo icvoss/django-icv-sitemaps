@@ -6,10 +6,12 @@ from ``icv_sitemaps.services`` without knowing the internal module layout.
 
 from icv_sitemaps.services.ads import (
     add_ads_entry,
+    invalidate_ads_cache,
     render_ads_txt,
 )
 from icv_sitemaps.services.discovery import (
     get_discovery_file_content,
+    invalidate_discovery_cache,
     set_discovery_file_content,
 )
 from icv_sitemaps.services.generation import (
@@ -32,6 +34,7 @@ from icv_sitemaps.services.redirects import (
 from icv_sitemaps.services.robots import (
     add_robots_rule,
     get_robots_rules,
+    invalidate_robots_cache,
     render_robots_txt,
 )
 from icv_sitemaps.services.sections import (
@@ -55,12 +58,15 @@ __all__ = [
     "render_robots_txt",
     "add_robots_rule",
     "get_robots_rules",
+    "invalidate_robots_cache",
     # Ads
     "render_ads_txt",
     "add_ads_entry",
+    "invalidate_ads_cache",
     # Discovery files
     "get_discovery_file_content",
     "set_discovery_file_content",
+    "invalidate_discovery_cache",
     # Redirects
     "check_redirect",
     "add_redirect",

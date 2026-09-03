@@ -450,6 +450,26 @@ ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES = [
 ]
 ```
 
+#### Raw `bulk_create` bypasses cache invalidation
+
+`RobotsRule`'s cache is invalidated by a `post_save`/`post_delete` signal
+handler, and Django's `bulk_create` emits neither signal. Writing
+`RobotsRule` rows directly with `RobotsRule.objects.bulk_create(...)`
+leaves the cached `robots.txt` content stale until
+`ICV_SITEMAPS_CACHE_TIMEOUT` expires (default 3600 seconds), even though
+the rows already exist in the database.
+
+Call `RobotsRule.objects.bulk_create(...)` yourself followed by
+`invalidate_robots_cache(tenant_id=...)`:
+
+```python
+from icv_sitemaps.services import invalidate_robots_cache
+from icv_sitemaps.models import RobotsRule
+
+RobotsRule.objects.bulk_create([...])
+invalidate_robots_cache(tenant_id="acme")
+```
+
 ### ads.txt / app-ads.txt
 
 IAB-format authorised seller declarations:
@@ -462,6 +482,27 @@ add_ads_entry("adnetwork.com", "pub-9876543210", "RESELLER")
 
 # For app-ads.txt
 add_ads_entry("google.com", "pub-1234567890", "DIRECT", is_app_ads=True)
+```
+
+#### Raw `bulk_create` bypasses cache invalidation
+
+`AdsEntry`'s cache is invalidated by a `post_save`/`post_delete` signal
+handler, and Django's `bulk_create` emits neither signal. Writing
+`AdsEntry` rows directly with `AdsEntry.objects.bulk_create(...)` leaves
+the cached `ads.txt` or `app-ads.txt` content stale until
+`ICV_SITEMAPS_CACHE_TIMEOUT` expires (default 3600 seconds), even though
+the rows already exist in the database. `AdsEntry` maps to two distinct
+cache keys depending on `is_app_ads`, so pass the matching value.
+
+Call `AdsEntry.objects.bulk_create(...)` yourself followed by
+`invalidate_ads_cache(is_app_ads=..., tenant_id=...)`:
+
+```python
+from icv_sitemaps.services import invalidate_ads_cache
+from icv_sitemaps.models import AdsEntry
+
+AdsEntry.objects.bulk_create([...])  # is_app_ads=False rows
+invalidate_ads_cache(is_app_ads=False, tenant_id="acme")
 ```
 
 ### llms.txt, security.txt, humans.txt
@@ -487,6 +528,27 @@ set_discovery_file_content("humans_txt", """/* TEAM */
 Lead: Nigel Copley
 Site: example.com
 """)
+```
+
+#### Raw `bulk_create` bypasses cache invalidation
+
+`DiscoveryFileConfig`'s cache is invalidated by a `post_save`/`post_delete`
+signal handler, and Django's `bulk_create` emits neither signal. Writing
+`DiscoveryFileConfig` rows directly with
+`DiscoveryFileConfig.objects.bulk_create(...)` leaves the cached content
+stale until `ICV_SITEMAPS_CACHE_TIMEOUT` expires (default 3600 seconds),
+even though the rows already exist in the database. Each `file_type` is
+cached under its own key, so pass the matching value.
+
+Call `DiscoveryFileConfig.objects.bulk_create(...)` yourself followed by
+`invalidate_discovery_cache(file_type, tenant_id=...)`:
+
+```python
+from icv_sitemaps.services import invalidate_discovery_cache
+from icv_sitemaps.models import DiscoveryFileConfig
+
+DiscoveryFileConfig.objects.bulk_create([...])  # all file_type="llms_txt"
+invalidate_discovery_cache("llms_txt", tenant_id="acme")
 ```
 
 ---
@@ -711,12 +773,15 @@ from icv_sitemaps.services import (
     render_robots_txt,
     add_robots_rule,
     get_robots_rules,
+    invalidate_robots_cache,
     # ads.txt
     render_ads_txt,
     add_ads_entry,
+    invalidate_ads_cache,
     # Discovery files
     get_discovery_file_content,
     set_discovery_file_content,
+    invalidate_discovery_cache,
     # Redirects
     check_redirect,
     add_redirect,

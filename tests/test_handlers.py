@@ -109,6 +109,73 @@ class TestDiscoveryFileConfigSignalsSurviveCacheFailure:
         assert not DiscoveryFileConfig.objects.filter(pk=pk).exists()
 
 
+class TestHandlersCallTheNamedInvalidators:
+    """Regression guard for #37: handlers.py was rewired from inline
+    cache-key literals to the named invalidate_*_cache functions extracted
+    from services/robots.py, services/ads.py and services/discovery.py.
+    These spy on the real function (wraps=...) so a call is proven, not
+    merely a key string matching a constant imported from the same module.
+    """
+
+    def test_on_robots_rule_save_calls_invalidate_robots_cache(self, db):
+        from icv_sitemaps.services import robots as robots_module
+
+        with patch.object(robots_module, "invalidate_robots_cache", wraps=robots_module.invalidate_robots_cache) as spy:
+            rule = RobotsRuleFactory()
+
+        spy.assert_called_once_with(tenant_id=rule.tenant_id)
+
+    def test_on_robots_rule_delete_calls_invalidate_robots_cache(self, db):
+        from icv_sitemaps.services import robots as robots_module
+
+        rule = RobotsRuleFactory()
+
+        with patch.object(robots_module, "invalidate_robots_cache", wraps=robots_module.invalidate_robots_cache) as spy:
+            rule.delete()
+
+        spy.assert_called_once_with(tenant_id=rule.tenant_id)
+
+    def test_on_ads_entry_save_calls_invalidate_ads_cache_with_is_app_ads(self, db):
+        from icv_sitemaps.services import ads as ads_module
+
+        with patch.object(ads_module, "invalidate_ads_cache", wraps=ads_module.invalidate_ads_cache) as spy:
+            entry = AdsEntryFactory(is_app_ads=True)
+
+        spy.assert_called_once_with(is_app_ads=True, tenant_id=entry.tenant_id)
+
+    def test_on_ads_entry_delete_calls_invalidate_ads_cache_with_is_app_ads(self, db):
+        from icv_sitemaps.services import ads as ads_module
+
+        entry = AdsEntryFactory(is_app_ads=False)
+
+        with patch.object(ads_module, "invalidate_ads_cache", wraps=ads_module.invalidate_ads_cache) as spy:
+            entry.delete()
+
+        spy.assert_called_once_with(is_app_ads=False, tenant_id=entry.tenant_id)
+
+    def test_on_discovery_config_save_calls_invalidate_discovery_cache_with_file_type(self, db):
+        from icv_sitemaps.services import discovery as discovery_module
+
+        with patch.object(
+            discovery_module, "invalidate_discovery_cache", wraps=discovery_module.invalidate_discovery_cache
+        ) as spy:
+            config = DiscoveryFileConfigFactory(file_type="humans_txt")
+
+        spy.assert_called_once_with("humans_txt", tenant_id=config.tenant_id)
+
+    def test_on_discovery_config_delete_calls_invalidate_discovery_cache_with_file_type(self, db):
+        from icv_sitemaps.services import discovery as discovery_module
+
+        config = DiscoveryFileConfigFactory(file_type="security_txt")
+
+        with patch.object(
+            discovery_module, "invalidate_discovery_cache", wraps=discovery_module.invalidate_discovery_cache
+        ) as spy:
+            config.delete()
+
+        spy.assert_called_once_with("security_txt", tenant_id=config.tenant_id)
+
+
 class TestRedirectRuleSignalsSurviveCacheFailure:
     def test_save_succeeds_when_cache_delete_raises(self, db):
         rule = RedirectRuleFactory()
