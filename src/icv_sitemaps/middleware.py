@@ -24,6 +24,12 @@ from django.http import (
 
 logger = logging.getLogger(__name__)
 
+# 410 asserts permanent removal, which is incoherent for a path the urlconf
+# just resolved with a 200, so gone-rules are evaluated only on the 404 path
+# below. Every other status code keeps the before-resolver evaluation.
+_GONE_STATUS_CODES = frozenset({410})
+_LIVE_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
+
 
 class RedirectMiddleware:
     """Evaluate redirect rules and track 404s."""
@@ -40,7 +46,7 @@ class RedirectMiddleware:
 
         # Fail-open: never break the request cycle.
         try:
-            rule = self._check_redirect(request)
+            rule = self._check_redirect(request, status_codes=_LIVE_REDIRECT_STATUS_CODES)
         except Exception:
             logger.exception("RedirectMiddleware: error checking redirect, passing through.")
             return self.get_response(request)
@@ -51,16 +57,27 @@ class RedirectMiddleware:
         response = self.get_response(request)
 
         if response.status_code == 404:
+            # A gone-rule is only meaningful once the urlconf has already
+            # failed to resolve the path; see the module-level comment.
+            try:
+                gone_rule = self._check_redirect(request, status_codes=_GONE_STATUS_CODES)
+            except Exception:
+                logger.exception("RedirectMiddleware: error checking gone rule, passing through.")
+                gone_rule = None
+
+            if gone_rule is not None:
+                return self._serve_redirect(gone_rule, request)
+
             self._maybe_record_404(request)
 
         return response
 
-    def _check_redirect(self, request) -> dict | None:
-        """Look up a matching redirect rule for this request."""
+    def _check_redirect(self, request, *, status_codes: frozenset[int]) -> dict | None:
+        """Look up a matching redirect rule for this request, restricted to *status_codes*."""
         from icv_sitemaps.services.redirects import check_redirect
 
         tenant_id = self._get_tenant_id(request)
-        return check_redirect(request.path, tenant_id=tenant_id)
+        return check_redirect(request.path, tenant_id=tenant_id, status_codes=status_codes)
 
     def _serve_redirect(self, rule: dict, request) -> HttpResponse:
         """Return the appropriate redirect or 410 response."""

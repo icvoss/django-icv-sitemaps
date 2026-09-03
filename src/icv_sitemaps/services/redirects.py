@@ -74,7 +74,12 @@ def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
     return rules
 
 
-def check_redirect(path: str, *, tenant_id: str = "") -> dict | None:
+def check_redirect(
+    path: str,
+    *,
+    tenant_id: str = "",
+    status_codes: frozenset[int] | None = None,
+) -> dict | None:
     """Check whether *path* matches an active redirect rule.
 
     Returns the first matching rule as a dict, or ``None``.
@@ -82,8 +87,18 @@ def check_redirect(path: str, *, tenant_id: str = "") -> dict | None:
     regex), then by ``priority`` (ascending) within that match type. An
     exact rule always wins over an overlapping prefix or regex rule,
     regardless of priority.
+
+    ``status_codes`` restricts evaluation to rules whose ``status_code`` is
+    in the given set, applied *before* matching so that a filtered-out rule
+    can never suppress a match a lower-precedence rule would otherwise win.
+    Defaults to ``None``, meaning all rules are considered, which is the
+    behaviour this function has always had; existing callers are
+    unaffected.
     """
     rules = get_cached_redirect_rules(tenant_id=tenant_id)
+
+    if status_codes is not None:
+        rules = [rule for rule in rules if rule["status_code"] in status_codes]
 
     for rule in rules:
         if _rule_matches(rule, path):

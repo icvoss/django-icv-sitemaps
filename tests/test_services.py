@@ -1528,6 +1528,50 @@ class TestCheckRedirect:
         assert second is not None
         assert second["destination"] == "/exact-destination/"
 
+    def test_status_codes_none_considers_every_rule(self, db):
+        """The default (``status_codes=None``) is the pre-existing, unfiltered
+        behaviour: a bare ``check_redirect(path)`` call must keep matching
+        across every status code, for external callers relying on today's
+        public signature.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/deleted-product/", "", 410)
+        result = check_redirect("/deleted-product/")
+        assert result is not None
+        assert result["status_code"] == 410
+
+    def test_status_codes_filters_out_excluded_rules(self, db):
+        """A rule whose status_code is not in the given set is skipped
+        entirely, not just its result discarded after matching.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/deleted-product/", "", 410)
+        result = check_redirect("/deleted-product/", status_codes=frozenset({301, 302, 307, 308}))
+        assert result is None
+
+    def test_status_codes_filter_applies_before_matching_not_after(self, db):
+        """A higher-precedence rule outside the filter must not suppress a
+        lower-precedence rule that IS in the filter.
+
+        An exact 410 rule and an overlapping prefix 302 rule both match
+        ``/deleted-product/1/``. Filtering after matching (i.e. matching
+        first, then discarding the result if its status_code is excluded)
+        would return ``None`` here, because the exact rule is the first
+        match and gets discarded. Filtering before matching removes the
+        410 rule from consideration entirely, so the prefix rule is found.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/deleted-product/1/", "", 410, match_type="exact")
+        add_redirect("/deleted-product/", "/products/", 302, match_type="prefix")
+
+        result = check_redirect("/deleted-product/1/", status_codes=frozenset({301, 302, 307, 308}))
+        assert result is not None
+        assert result["status_code"] == 302
+        assert result["destination"] == "/products/"
+
 
 class TestAddRedirect:
     def test_creates_rule(self, db):

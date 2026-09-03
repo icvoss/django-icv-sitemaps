@@ -9,6 +9,23 @@
 
 ### Fixed
 
+- **A 410 rule could shadow a live view** (#17). `RedirectMiddleware` now
+  splits redirect evaluation by status code: a 301/302/307/308 rule is still
+  evaluated before `get_response()` and wins over the urlconf exactly as
+  before, no behaviour change there. A 410 rule is now evaluated only when
+  the response from `get_response()` is a 404. Previously a 410 rule was
+  evaluated ahead of the urlconf like any other rule, so a stale "gone" rule
+  for a path a view now legitimately serves at 200 would incorrectly answer
+  with 410 instead. A consumer whose 410 rule currently shadows a live URL
+  will start getting the live page's 200 response instead of a 410; a 410
+  rule for a path that genuinely does not resolve is served exactly as
+  before, including `hit_count`/`last_hit_at` tracking and the
+  `redirect_matched` signal. A path answered by a matching gone-rule is not
+  additionally recorded by the 404 tracker, since it now has an answer
+  rather than being missing. `check_redirect` gained a keyword-only
+  `status_codes` parameter to support this; the default (`None`) preserves
+  today's behaviour for existing callers.
+
 - **Redirect rules were not evaluated in the documented order** (#24).
   `check_redirect`'s docstring has always said rules are evaluated "exact
   matches first, then prefix, then regex", but `get_cached_redirect_rules`
