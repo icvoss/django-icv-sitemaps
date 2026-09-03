@@ -24,6 +24,29 @@
   none has a high-volume machine-generated write pattern comparable to the
   redirect tombstone workflow that motivated it.
 
+- A Django system check (`icv_sitemaps.W001`) warning when
+  `ICV_SITEMAPS_BASE_URL` is empty (#34). Sitemap `<loc>` elements must be
+  absolute URLs; with the setting unset, `generate_index` silently emitted
+  a root-relative path, which is invalid per the sitemap protocol, while
+  `ping_search_engines` and `icv_sitemaps_ping` already surfaced the
+  problem on their own paths. The check now surfaces it on every
+  `manage.py` invocation too. It is a `Warning`, not an `Error`, and is not
+  gated on whether a `SitemapSection` is configured: the setting is
+  genuinely optional for a consumer who only serves robots.txt or ads.txt,
+  and a check that queries the database to decide severity would be a
+  startup-breakage risk during migrations, fresh installs, and
+  `collectstatic`.
+
+### Fixed
+
+- **Missing PEP 561 `py.typed` marker** (#39). The package ships fully
+  annotated source but no `py.typed` file, so PEP 561 requires a type
+  checker running in a consuming project to ignore the annotations
+  entirely and treat every import from `icv_sitemaps` as `Any`. Added the
+  marker and a `[tool.setuptools.package-data]` declaration so it is
+  actually packaged in the wheel; a consumer's `mypy` or `pyright` run can
+  now see this package's types.
+
 ## [2.0.0] - 2026-09-03
 
 ### Added
