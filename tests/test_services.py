@@ -1422,13 +1422,59 @@ class TestCheckRedirect:
         result = check_redirect("/product/123/")
         assert result is not None
 
-    def test_priority_ordering(self, db):
+    def test_priority_ordering_within_match_type(self, db):
+        """Priority only orders rules within the same match type.
+
+        Both rules here are ``prefix``, so match-type ranking does not
+        apply and priority is the deciding factor.
+        """
         from icv_sitemaps.services.redirects import add_redirect, check_redirect
 
-        add_redirect("/path/", "/low-priority/", 301, priority=10)
-        add_redirect("/path/", "/high-priority/", 302, priority=1, match_type="prefix")
-        result = check_redirect("/path/")
+        add_redirect("/blog/", "/low-priority/", 301, priority=10, match_type="prefix")
+        add_redirect("/blog/", "/high-priority/", 302, priority=1, match_type="prefix")
+        result = check_redirect("/blog/post-1/")
         assert result["destination"] == "/high-priority/"
+
+    def test_exact_beats_prefix_regardless_of_priority(self, db):
+        """An exact rule always wins over an overlapping prefix rule, even
+        when the prefix rule has a numerically lower (better) priority.
+
+        This is the documented contract in check_redirect's docstring and
+        the fix for #24: match type is the primary sort key, priority only
+        orders within a match type. Fails against the pre-#24 code, which
+        ordered purely by ("priority", "pk") and let the prefix rule win.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect("/path/", "/prefix-wins-old-behaviour/", 301, priority=0, match_type="prefix")
+        add_redirect("/path/", "/exact-wins-documented-behaviour/", 302, priority=10, match_type="exact")
+
+        result = check_redirect("/path/")
+        assert result["destination"] == "/exact-wins-documented-behaviour/"
+
+    def test_prefix_beats_regex_regardless_of_priority(self, db):
+        """A prefix rule always wins over an overlapping regex rule, even
+        when the regex rule has a numerically lower (better) priority.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect(r"/prod/\d+/", "/regex-destination/", 301, priority=0, match_type="regex")
+        add_redirect("/prod/", "/prefix-destination/", 302, priority=10, match_type="prefix")
+
+        result = check_redirect("/prod/123/")
+        assert result["destination"] == "/prefix-destination/"
+
+    def test_exact_beats_regex_regardless_of_priority(self, db):
+        """An exact rule always wins over an overlapping regex rule, even
+        when the regex rule has a numerically lower (better) priority.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+
+        add_redirect(r"/item/\d+/", "/regex-destination/", 301, priority=0, match_type="regex")
+        add_redirect("/item/42/", "/exact-destination/", 302, priority=10, match_type="exact")
+
+        result = check_redirect("/item/42/")
+        assert result["destination"] == "/exact-destination/"
 
     def test_inactive_excluded(self, db):
         from icv_sitemaps.services.redirects import check_redirect

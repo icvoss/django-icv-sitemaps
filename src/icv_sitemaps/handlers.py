@@ -112,10 +112,10 @@ def on_discovery_config_delete(sender, instance, **kwargs) -> None:
 @receiver(post_save, sender="icv_sitemaps.RedirectRule")
 def on_redirect_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the redirect cache and fire redirect_rule_saved signal."""
+    from icv_sitemaps.services.redirects import invalidate_redirect_cache
     from icv_sitemaps.signals import redirect_rule_saved
 
-    cache_key = f"icv_sitemaps:redirects:{instance.tenant_id}"
-    cache.delete(cache_key)
+    invalidate_redirect_cache(tenant_id=instance.tenant_id)
     redirect_rule_saved.send(sender=sender, instance=instance)
     logger.debug("Invalidated redirect cache for tenant %r.", instance.tenant_id)
 
@@ -123,9 +123,9 @@ def on_redirect_rule_save(sender, instance, **kwargs) -> None:
 @receiver(post_delete, sender="icv_sitemaps.RedirectRule")
 def on_redirect_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the redirect cache and fire redirect_rule_deleted signal."""
+    from icv_sitemaps.services.redirects import invalidate_redirect_cache
     from icv_sitemaps.signals import redirect_rule_deleted
 
-    cache_key = f"icv_sitemaps:redirects:{instance.tenant_id}"
-    cache.delete(cache_key)
+    invalidate_redirect_cache(tenant_id=instance.tenant_id)
     redirect_rule_deleted.send(sender=sender, instance=instance)
     logger.debug("Invalidated redirect cache for tenant %r (rule deleted).", instance.tenant_id)

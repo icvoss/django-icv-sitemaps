@@ -6,7 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, When
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -24,24 +24,39 @@ logger = logging.getLogger(__name__)
 def get_cached_redirect_rules(*, tenant_id: str = "") -> list[dict]:
     """Return active redirect rules as a cache-friendly list of dicts.
 
-    Rules are sorted by priority (ascending). The cache is invalidated by
-    signal handlers in ``handlers.py`` whenever a rule is saved or deleted.
+    Rules are sorted by match type first (exact, then prefix, then regex),
+    then by priority (ascending), then by primary key as a stable final
+    tiebreaker. This matches the precedence documented on
+    :func:`check_redirect`: an exact rule always beats a prefix rule, and a
+    prefix rule always beats a regex rule, regardless of ``priority``.
+    ``priority`` only orders rules within the same match type.
+
+    The cache is invalidated by signal handlers in ``handlers.py`` whenever
+    a rule is saved or deleted.
     """
     from django.core.cache import cache
 
     from icv_sitemaps.conf import ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT
 
-    cache_key = f"icv_sitemaps:redirects:{tenant_id}"
+    cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     from icv_sitemaps.models.redirects import RedirectRule
 
+    match_type_rank = Case(
+        When(match_type="exact", then=0),
+        When(match_type="prefix", then=1),
+        When(match_type="regex", then=2),
+        default=3,
+        output_field=IntegerField(),
+    )
+
     rules = list(
         RedirectRule.objects.active()
         .filter(tenant_id=tenant_id)
-        .order_by("priority", "pk")
+        .order_by(match_type_rank, "priority", "pk")
         .values(
             "id",
             "match_type",
@@ -60,8 +75,10 @@ def check_redirect(path: str, *, tenant_id: str = "") -> dict | None:
     """Check whether *path* matches an active redirect rule.
 
     Returns the first matching rule as a dict, or ``None``.
-    Rules are evaluated in priority order: exact matches first, then prefix,
-    then regex.
+    Rules are evaluated by match type first (exact, then prefix, then
+    regex), then by ``priority`` (ascending) within that match type. An
+    exact rule always wins over an overlapping prefix or regex rule,
+    regardless of priority.
     """
     rules = get_cached_redirect_rules(tenant_id=tenant_id)
 
@@ -94,7 +111,7 @@ def invalidate_redirect_cache(*, tenant_id: str = "") -> None:
     """Delete the cached redirect rules for *tenant_id*."""
     from django.core.cache import cache
 
-    cache_key = f"icv_sitemaps:redirects:{tenant_id}"
+    cache_key = f"icv_sitemaps:redirects:v2:{tenant_id}"
     cache.delete(cache_key)
 
 
