@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-09-03
 
 ### Added
 
@@ -69,7 +69,7 @@
   the exact-match query applies `status_codes` itself, so a 410-only exact
   rule still cannot pre-empt a live view before the urlconf runs.
 
-- **A 410 rule could shadow a live view** (#17). `RedirectMiddleware` now
+- **BREAKING:** **A 410 rule could shadow a live view** (#17). `RedirectMiddleware` now
   splits redirect evaluation by status code: a 301/302/307/308 rule is still
   evaluated before `get_response()` and wins over the urlconf exactly as
   before, no behaviour change there. A 410 rule is now evaluated only when
@@ -86,7 +86,7 @@
   `status_codes` parameter to support this; the default (`None`) preserves
   today's behaviour for existing callers.
 
-- **Redirect rules were not evaluated in the documented order** (#24).
+- **BREAKING:** **Redirect rules were not evaluated in the documented order** (#24).
   `check_redirect`'s docstring has always said rules are evaluated "exact
   matches first, then prefix, then regex", but `get_cached_redirect_rules`
   only ordered by `priority` and never took `match_type` into account. In
@@ -177,7 +177,7 @@
   shaped, valid-looking one) and a warning is logged naming the entry so
   an operator can find and fix it.
 
-- **Empty ads.txt / app-ads.txt served a zero-byte body** (#22). IAB
+- **BREAKING:** **Empty ads.txt / app-ads.txt served a zero-byte body** (#22). IAB
   ads.txt v1.1 s3.2.1 deprecated the empty-file method for declaring "no
   authorised sellers": it "should be ignored by consuming systems after
   March 1, 2020". `render_ads_txt()` now emits the IAB placeholder record
@@ -186,8 +186,8 @@
   and app-ads.txt. Set the new `ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER`
   setting to `False` to restore the previous empty-body behaviour.
 
-- **security.txt accepted any content, including a blank file, with
-  neither of RFC 9116's mandatory fields enforced** (#20).
+- **BREAKING:** **security.txt accepted any content, including a blank file,
+  with neither of RFC 9116's mandatory fields enforced** (#20).
   `DiscoveryFileConfig.content` was an opaque `TextField` and
   `set_discovery_file_content()` did no validation and did not dispatch on
   `file_type`. Saving `file_type="security_txt"` content now requires at
@@ -220,8 +220,8 @@
   to an explicitly settable `DateTimeField` (migration
   `0006_alter_sitemapfile_generated_at`) so the carried-forward value is
   not silently overwritten on create.
-- **`robots.txt` now emits rules in RFC 9309 longest-match order, not
-  author-declared order** (#21). Within each `User-agent` group, `Allow`
+- **BREAKING:** **`robots.txt` now emits rules in RFC 9309 longest-match
+  order, not author-declared order** (#21). Within each `User-agent` group, `Allow`
   and `Disallow` rules are sorted by descending path-pattern length, with
   `Allow` winning an exact-length tie, matching what every conforming
   crawler already does when it parses the file. This changes emitted
@@ -240,6 +240,70 @@
   `googlebot` rules previously rendered as two separate `User-agent`
   blocks; they now render as a single group, under the first-seen
   spelling.
+
+### Upgrading from 1.0.0
+
+This is a major version because five fixes change behaviour for an existing
+consumer with no code change on their side. Nothing in the package's own API
+signatures is incompatible: `check_redirect` gained a keyword-only argument
+with a default that preserves its previous behaviour, and every other public
+function keeps its signature. What changed is that invalid input is now
+rejected and non-conformant output corrected, which is visible to anyone
+relying on the previous behaviour.
+
+Read these five before upgrading.
+
+1. **A `security.txt` write that was previously accepted may now raise**
+   (#20). `set_discovery_file_content()` with `file_type="security_txt"`
+   now requires at least one `Contact` field and exactly one `Expires`
+   field holding a valid RFC 3339 timestamp, and raises `ValueError`
+   otherwise. If you write security.txt content programmatically, check it
+   satisfies both before upgrading, or catch the `ValueError`. Existing
+   rows already in the database are not validated retroactively and are
+   served as they are; only new writes are checked. `llms_txt` and
+   `humans_txt` are unaffected.
+
+2. **A path that returned 410 may now return 200** (#17). A 410 rule is
+   now evaluated only after the urlconf has failed to resolve the path, so
+   a stale "gone" rule no longer shadows a URL a view legitimately serves.
+   If you were relying on a 410 rule to take a live page out of service,
+   that no longer works: deactivate or delete the view's route instead.
+   A 410 rule for a path that genuinely does not resolve behaves exactly
+   as before.
+
+3. **A different redirect rule may now win** (#24). Match type now takes
+   precedence over `priority`: an exact rule always beats a prefix rule,
+   which always beats a regex rule, and `priority` only orders rules
+   within one match type. Previously `priority` alone decided, so a broad
+   low-priority prefix rule could beat a specific exact rule. If you tuned
+   `priority` values to work around the old ordering, re-check them.
+
+4. **robots.txt output ordering changed** (#21). Within each `User-agent`
+   group, rules are now emitted in RFC 9309 longest-match order rather
+   than author-declared order, and groups whose user-agent tokens differ
+   only by case are folded into one. The set of rules is unchanged and
+   conformant crawlers apply longest-match regardless of order, so this
+   should not change what any crawler does. It will change your rendered
+   robots.txt byte-for-byte, which matters if you assert on its exact text
+   or diff it in a deploy check.
+
+5. **An empty ads.txt or app-ads.txt now serves a placeholder record**
+   (#22) rather than a zero-byte body, per IAB ads.txt v1.1 s3.2.1, which
+   deprecated the empty-file method of declaring "no authorised sellers".
+   The body becomes `placeholder.example.com, placeholder, DIRECT,
+   placeholder`. Set `ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER = False` to
+   restore the previous empty-body behaviour.
+
+Two further changes are safe but worth knowing about:
+
+- **The redirect rule cache key moved from `v2` to `v3`** (#16) because the
+  cached payload no longer contains exact-match rules. No action is needed:
+  a stale `v2` entry is ignored and the list is rebuilt under the new shape
+  on first read. If you invalidate the cache by key from outside the
+  package, update the key.
+- **No migration is required.** Nothing in this release changes the
+  database schema. The last schema change was
+  `0008_alter_robotsrule_order` in 1.0.0.
 
 ## [1.0.0] - 2026-08-09
 
