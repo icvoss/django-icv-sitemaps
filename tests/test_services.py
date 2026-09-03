@@ -1333,6 +1333,96 @@ class TestGenerateIndex:
         assert "sitemapindex" in content
         assert "https://example.com" in content
 
+    def test_within_caps_succeeds(self, db, tmp_path, settings):
+        """A handful of entries, well under both caps, generates normally."""
+        from unittest.mock import patch
+
+        import icv_sitemaps.conf as conf_mod
+        import icv_sitemaps.services.generation as generation_mod
+
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from icv_sitemaps.testing.factories import SitemapFileFactory
+
+        section = SitemapSectionFactory(name="articles")
+        for i in range(3):
+            SitemapFileFactory(section=section, storage_path=f"sitemaps/articles-{i}.xml")
+
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_GZIP", False),
+            patch.object(conf_mod, "ICV_SITEMAPS_STORAGE_PATH", "sitemaps/"),
+            patch.object(conf_mod, "ICV_SITEMAPS_BASE_URL", "https://example.com"),
+            patch.object(generation_mod, "_INDEX_MAX_ENTRIES", 10),
+            patch.object(generation_mod, "_INDEX_MAX_BYTES", 52_428_800),
+        ):
+            path = generate_index()
+
+        from django.core.files.storage import default_storage
+
+        assert default_storage.exists(path)
+
+    def test_exceeds_entry_count_raises(self, db, tmp_path, settings):
+        """More SitemapFile rows than the cap raises SitemapGenerationError
+        naming the entry-count cap, without ever writing an index file."""
+        from unittest.mock import patch
+
+        import icv_sitemaps.conf as conf_mod
+        import icv_sitemaps.services.generation as generation_mod
+        from icv_sitemaps.exceptions import SitemapGenerationError
+
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from icv_sitemaps.testing.factories import SitemapFileFactory
+
+        section = SitemapSectionFactory(name="articles")
+        for i in range(4):
+            SitemapFileFactory(section=section, storage_path=f"sitemaps/articles-{i}.xml")
+
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_GZIP", False),
+            patch.object(conf_mod, "ICV_SITEMAPS_STORAGE_PATH", "sitemaps/"),
+            patch.object(conf_mod, "ICV_SITEMAPS_BASE_URL", "https://example.com"),
+            patch.object(generation_mod, "_INDEX_MAX_ENTRIES", 3),
+            patch.object(generation_mod, "_INDEX_MAX_BYTES", 52_428_800),
+            pytest.raises(SitemapGenerationError, match="entries"),
+        ):
+            generate_index()
+
+        from django.core.files.storage import default_storage
+
+        assert not default_storage.exists("sitemaps/sitemap.xml")
+
+    def test_exceeds_byte_size_raises(self, db, tmp_path, settings):
+        """More serialised bytes than the cap raises SitemapGenerationError
+        naming the byte-size cap, measured against the real serialised XML."""
+        from unittest.mock import patch
+
+        import icv_sitemaps.conf as conf_mod
+        import icv_sitemaps.services.generation as generation_mod
+        from icv_sitemaps.exceptions import SitemapGenerationError
+
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from icv_sitemaps.testing.factories import SitemapFileFactory
+
+        section = SitemapSectionFactory(name="articles")
+        for i in range(3):
+            SitemapFileFactory(section=section, storage_path=f"sitemaps/articles-{i}.xml")
+
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_GZIP", False),
+            patch.object(conf_mod, "ICV_SITEMAPS_STORAGE_PATH", "sitemaps/"),
+            patch.object(conf_mod, "ICV_SITEMAPS_BASE_URL", "https://example.com"),
+            patch.object(generation_mod, "_INDEX_MAX_ENTRIES", 50_000),
+            patch.object(generation_mod, "_INDEX_MAX_BYTES", 10),
+            pytest.raises(SitemapGenerationError, match="bytes"),
+        ):
+            generate_index()
+
+        from django.core.files.storage import default_storage
+
+        assert not default_storage.exists("sitemaps/sitemap.xml")
+
 
 # ---------------------------------------------------------------------------
 # ping_search_engines
