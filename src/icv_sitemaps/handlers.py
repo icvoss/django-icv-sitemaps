@@ -15,8 +15,6 @@ import logging
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from icv_sitemaps.cache import safe_delete
-
 logger = logging.getLogger(__name__)
 
 
@@ -28,16 +26,18 @@ logger = logging.getLogger(__name__)
 @receiver(post_save, sender="icv_sitemaps.RobotsRule")
 def on_robots_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the robots.txt cache when a rule is saved."""
-    cache_key = f"icv_sitemaps:robots_txt:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.robots import invalidate_robots_cache
+
+    invalidate_robots_cache(tenant_id=instance.tenant_id)
     logger.debug("Invalidated robots.txt cache for tenant %r.", instance.tenant_id)
 
 
 @receiver(post_delete, sender="icv_sitemaps.RobotsRule")
 def on_robots_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the robots.txt cache when a rule is deleted."""
-    cache_key = f"icv_sitemaps:robots_txt:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.robots import invalidate_robots_cache
+
+    invalidate_robots_cache(tenant_id=instance.tenant_id)
     logger.debug("Invalidated robots.txt cache for tenant %r (rule deleted).", instance.tenant_id)
 
 
@@ -49,11 +49,9 @@ def on_robots_rule_delete(sender, instance, **kwargs) -> None:
 @receiver(post_save, sender="icv_sitemaps.AdsEntry")
 def on_ads_entry_save(sender, instance, **kwargs) -> None:
     """Invalidate the ads.txt or app-ads.txt cache when an entry is saved."""
-    if instance.is_app_ads:
-        cache_key = f"icv_sitemaps:app_ads_txt:{instance.tenant_id}"
-    else:
-        cache_key = f"icv_sitemaps:ads_txt:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.ads import invalidate_ads_cache
+
+    invalidate_ads_cache(is_app_ads=instance.is_app_ads, tenant_id=instance.tenant_id)
     logger.debug(
         "Invalidated %s cache for tenant %r.",
         "app-ads.txt" if instance.is_app_ads else "ads.txt",
@@ -64,11 +62,9 @@ def on_ads_entry_save(sender, instance, **kwargs) -> None:
 @receiver(post_delete, sender="icv_sitemaps.AdsEntry")
 def on_ads_entry_delete(sender, instance, **kwargs) -> None:
     """Invalidate the ads.txt or app-ads.txt cache when an entry is deleted."""
-    if instance.is_app_ads:
-        cache_key = f"icv_sitemaps:app_ads_txt:{instance.tenant_id}"
-    else:
-        cache_key = f"icv_sitemaps:ads_txt:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.ads import invalidate_ads_cache
+
+    invalidate_ads_cache(is_app_ads=instance.is_app_ads, tenant_id=instance.tenant_id)
     logger.debug(
         "Invalidated %s cache for tenant %r (entry deleted).",
         "app-ads.txt" if instance.is_app_ads else "ads.txt",
@@ -84,8 +80,9 @@ def on_ads_entry_delete(sender, instance, **kwargs) -> None:
 @receiver(post_save, sender="icv_sitemaps.DiscoveryFileConfig")
 def on_discovery_config_save(sender, instance, **kwargs) -> None:
     """Invalidate the discovery file cache when its config is saved."""
-    cache_key = f"icv_sitemaps:discovery:{instance.file_type}:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+    invalidate_discovery_cache(instance.file_type, tenant_id=instance.tenant_id)
     logger.debug(
         "Invalidated %s cache for tenant %r.",
         instance.file_type,
@@ -96,8 +93,9 @@ def on_discovery_config_save(sender, instance, **kwargs) -> None:
 @receiver(post_delete, sender="icv_sitemaps.DiscoveryFileConfig")
 def on_discovery_config_delete(sender, instance, **kwargs) -> None:
     """Invalidate the discovery file cache when its config is deleted."""
-    cache_key = f"icv_sitemaps:discovery:{instance.file_type}:{instance.tenant_id}"
-    safe_delete(cache_key)
+    from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+    invalidate_discovery_cache(instance.file_type, tenant_id=instance.tenant_id)
     logger.debug(
         "Invalidated %s cache for tenant %r (config deleted).",
         instance.file_type,

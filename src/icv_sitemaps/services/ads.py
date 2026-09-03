@@ -77,6 +77,37 @@ def render_ads_txt(*, app_ads: bool = False, tenant_id: str = "") -> str:
     return "\n".join(lines)
 
 
+def invalidate_ads_cache(*, is_app_ads: bool = False, tenant_id: str = "") -> None:
+    """Delete the cached ads.txt or app-ads.txt content for *tenant_id*.
+
+    Named counterpart to :func:`icv_sitemaps.services.redirects.invalidate_redirect_cache`
+    (#29): a documented escape hatch for a consumer who writes ``AdsEntry``
+    rows with a raw ``AdsEntry.objects.bulk_create(...)`` call of their own,
+    which emits no ``post_save`` signal and so leaves the rendered ads.txt
+    (or app-ads.txt) cache stale until ``ICV_SITEMAPS_CACHE_TIMEOUT``
+    expires (#37).
+
+    ``AdsEntry`` maps to two distinct cache keys depending on ``is_app_ads``
+    (``icv_sitemaps:ads_txt:{tenant}`` vs ``icv_sitemaps:app_ads_txt:{tenant}``),
+    so this function invalidates exactly one of them, matching the
+    per-instance branch ``handlers.py`` already makes on
+    ``instance.is_app_ads``: an entry belongs to one file or the other,
+    never both, so invalidating both keys on every write would be needless
+    (a bulk batch mixing both kinds calls this once per kind it touched).
+    The key matches the one built in ``handlers.py`` and ``views.py``
+    exactly.
+
+    Args:
+        is_app_ads: When ``True``, invalidates the app-ads.txt cache.
+            When ``False`` (default), invalidates the ads.txt cache.
+        tenant_id: Tenant identifier.
+    """
+    from icv_sitemaps.cache import safe_delete
+
+    cache_key = f"icv_sitemaps:app_ads_txt:{tenant_id}" if is_app_ads else f"icv_sitemaps:ads_txt:{tenant_id}"
+    safe_delete(cache_key)
+
+
 def add_ads_entry(
     domain: str,
     publisher_id: str,
@@ -110,7 +141,6 @@ def add_ads_entry(
             ``comment``, or any string value passed via ``**kwargs``
             contains a newline character.
     """
-    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import AdsEntry
 
     relationship_upper = relationship.upper()
@@ -146,8 +176,6 @@ def add_ads_entry(
         **kwargs,
     )
 
-    # Invalidate the appropriate cache key
-    cache_key = f"icv_sitemaps:app_ads_txt:{tenant_id}" if is_app_ads else f"icv_sitemaps:ads_txt:{tenant_id}"
-    safe_delete(cache_key)
+    invalidate_ads_cache(is_app_ads=is_app_ads, tenant_id=tenant_id)
 
     return entry

@@ -21,6 +21,51 @@
   whichever cap was exceeded, rather than writing a sitemap index a
   crawler would reject.
 
+### Added
+
+- **`invalidate_robots_cache`, `invalidate_ads_cache`, `invalidate_discovery_cache`**
+  (#37), extracted and exported alongside `invalidate_redirect_cache` (#29):
+  `RobotsRule`, `AdsEntry` and `DiscoveryFileConfig` shared the same
+  `bulk_create` staleness gap #29 fixed for `RedirectRule`. Cache
+  invalidation for these three models previously happened only via
+  `post_save`/`post_delete` signal handlers, which Django's `bulk_create`
+  never fires, leaving a stale render served until
+  `ICV_SITEMAPS_CACHE_TIMEOUT` (default 3600 seconds) expires even though
+  the rows already exist in the database. `handlers.py` and
+  `add_robots_rule`/`add_ads_entry`/`set_discovery_file_content` now call
+  these named functions instead of rebuilding cache-key strings inline; the
+  keys are unchanged. `invalidate_ads_cache` takes an `is_app_ads` keyword,
+  since `AdsEntry` maps to two distinct cache keys; `invalidate_discovery_cache`
+  takes `file_type` as a required positional argument, since
+  `DiscoveryFileConfig` is keyed per file type. See the README for the
+  raw-`bulk_create` caveat for each of the three models. No bulk-safe
+  creator equivalent to `bulk_create_redirects` is added for these three:
+  none has a high-volume machine-generated write pattern comparable to the
+  redirect tombstone workflow that motivated it.
+
+- A Django system check (`icv_sitemaps.W001`) warning when
+  `ICV_SITEMAPS_BASE_URL` is empty (#34). Sitemap `<loc>` elements must be
+  absolute URLs; with the setting unset, `generate_index` silently emitted
+  a root-relative path, which is invalid per the sitemap protocol, while
+  `ping_search_engines` and `icv_sitemaps_ping` already surfaced the
+  problem on their own paths. The check now surfaces it on every
+  `manage.py` invocation too. It is a `Warning`, not an `Error`, and is not
+  gated on whether a `SitemapSection` is configured: the setting is
+  genuinely optional for a consumer who only serves robots.txt or ads.txt,
+  and a check that queries the database to decide severity would be a
+  startup-breakage risk during migrations, fresh installs, and
+  `collectstatic`.
+
+### Fixed
+
+- **Missing PEP 561 `py.typed` marker** (#39). The package ships fully
+  annotated source but no `py.typed` file, so PEP 561 requires a type
+  checker running in a consuming project to ignore the annotations
+  entirely and treat every import from `icv_sitemaps` as `Any`. Added the
+  marker and a `[tool.setuptools.package-data]` declaration so it is
+  actually packaged in the wheel; a consumer's `mypy` or `pyright` run can
+  now see this package's types.
+
 ## [2.0.0] - 2026-09-03
 
 ### Added

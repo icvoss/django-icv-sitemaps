@@ -112,6 +112,23 @@ def render_robots_txt(*, tenant_id: str = "") -> str:
     return "\n".join(lines)
 
 
+def invalidate_robots_cache(*, tenant_id: str = "") -> None:
+    """Delete the cached robots.txt content for *tenant_id*.
+
+    Named counterpart to :func:`icv_sitemaps.services.redirects.invalidate_redirect_cache`
+    (#29): a documented escape hatch for a consumer who writes ``RobotsRule``
+    rows with a raw ``RobotsRule.objects.bulk_create(...)`` call of their
+    own, which emits no ``post_save`` signal and so leaves the rendered
+    robots.txt cache stale until ``ICV_SITEMAPS_CACHE_TIMEOUT`` expires
+    (#37). The key matches the one built in ``handlers.py`` and
+    ``views.py`` exactly.
+    """
+    from icv_sitemaps.cache import safe_delete
+
+    cache_key = f"icv_sitemaps:robots_txt:{tenant_id}"
+    safe_delete(cache_key)
+
+
 def add_robots_rule(
     user_agent: str,
     directive: str,
@@ -145,7 +162,6 @@ def add_robots_rule(
     Raises:
         ValueError: If ``directive`` or ``path`` is invalid.
     """
-    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import RobotsRule
 
     directive_lower = directive.lower()
@@ -171,7 +187,6 @@ def add_robots_rule(
         **kwargs,
     )
 
-    cache_key = f"icv_sitemaps:robots_txt:{tenant_id}"
-    safe_delete(cache_key)
+    invalidate_robots_cache(tenant_id=tenant_id)
 
     return rule

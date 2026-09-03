@@ -56,6 +56,9 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+icv_sitemaps = ["py.typed"]
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "settings"
 pythonpath = ["src", "tests"]
