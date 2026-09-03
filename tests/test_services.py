@@ -2025,3 +2025,246 @@ class TestGetCachedRedirectRulesSurvivesCacheFailure:
 
         assert len(rules) == 1
         assert rules[0]["destination"] == "/new/"
+
+
+# ---------------------------------------------------------------------------
+# invalidate_robots_cache / invalidate_ads_cache / invalidate_discovery_cache
+# (#37)
+#
+# RobotsRule, AdsEntry and DiscoveryFileConfig shared the same bulk_create
+# staleness gap #29 fixed for RedirectRule: cache invalidation happened
+# only via post_save/post_delete, which Django's bulk_create never fires.
+# These tests assert on observable cache behaviour (set a value, trigger
+# the function, confirm it is gone), not on a key string matching a
+# constant imported from the same module.
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateRobotsCache:
+    def test_deletes_the_key_the_view_reads(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.robots import invalidate_robots_cache
+
+        cache_key = "icv_sitemaps:robots_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+        assert cache.get(cache_key) == "stale content"
+
+        invalidate_robots_cache()
+
+        assert cache.get(cache_key) is None
+
+    def test_scopes_to_tenant(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.robots import invalidate_robots_cache
+
+        cache.set("icv_sitemaps:robots_txt:acme", "acme content", timeout=3600)
+        cache.set("icv_sitemaps:robots_txt:other", "other content", timeout=3600)
+
+        invalidate_robots_cache(tenant_id="acme")
+
+        assert cache.get("icv_sitemaps:robots_txt:acme") is None
+        assert cache.get("icv_sitemaps:robots_txt:other") == "other content"
+
+    def test_does_not_raise_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.robots import invalidate_robots_cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            invalidate_robots_cache()  # must not raise
+
+    def test_bulk_create_staleness_is_fixed_by_calling_the_invalidator(self, db):
+        """The actual regression: RobotsRule.objects.bulk_create() emits no
+        signal, so a stale cached robots.txt render would otherwise survive
+        the write. Calling invalidate_robots_cache() afterwards, as the
+        README documents, is what makes the next render fresh.
+        """
+        from django.core.cache import cache
+
+        from icv_sitemaps.models.discovery import RobotsRule
+        from icv_sitemaps.services.robots import invalidate_robots_cache
+
+        cache_key = "icv_sitemaps:robots_txt:"
+        cache.set(cache_key, "stale rendered content", timeout=3600)
+
+        RobotsRule.objects.bulk_create([RobotsRule(user_agent="*", directive="disallow", path="/admin/")])
+        # bulk_create fires no post_save signal, so the stale entry survives
+        # the write on its own.
+        assert cache.get(cache_key) == "stale rendered content"
+
+        invalidate_robots_cache()
+
+        assert cache.get(cache_key) is None
+
+    def test_signal_handler_still_invalidates_after_rewiring(self, db):
+        """Regression guard for the handlers.py rewiring: on_robots_rule_save
+        must still delete the cache key on an ordinary model save, now via
+        the named invalidator rather than an inline cache_key literal.
+        """
+        from django.core.cache import cache
+
+        from icv_sitemaps.testing.factories import RobotsRuleFactory
+
+        cache_key = "icv_sitemaps:robots_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+
+        RobotsRuleFactory()
+
+        assert cache.get(cache_key) is None
+
+
+class TestInvalidateAdsCache:
+    def test_deletes_the_ads_txt_key(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.ads import invalidate_ads_cache
+
+        cache_key = "icv_sitemaps:ads_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+
+        invalidate_ads_cache(is_app_ads=False)
+
+        assert cache.get(cache_key) is None
+
+    def test_deletes_the_app_ads_txt_key_not_the_ads_txt_key(self, db):
+        """The two-key split: is_app_ads=True must invalidate only
+        app_ads_txt, leaving the unrelated ads_txt key untouched.
+        """
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.ads import invalidate_ads_cache
+
+        cache.set("icv_sitemaps:ads_txt:", "ads content", timeout=3600)
+        cache.set("icv_sitemaps:app_ads_txt:", "app-ads content", timeout=3600)
+
+        invalidate_ads_cache(is_app_ads=True)
+
+        assert cache.get("icv_sitemaps:app_ads_txt:") is None
+        assert cache.get("icv_sitemaps:ads_txt:") == "ads content"
+
+    def test_scopes_to_tenant(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.ads import invalidate_ads_cache
+
+        cache.set("icv_sitemaps:ads_txt:acme", "acme content", timeout=3600)
+        cache.set("icv_sitemaps:ads_txt:other", "other content", timeout=3600)
+
+        invalidate_ads_cache(is_app_ads=False, tenant_id="acme")
+
+        assert cache.get("icv_sitemaps:ads_txt:acme") is None
+        assert cache.get("icv_sitemaps:ads_txt:other") == "other content"
+
+    def test_does_not_raise_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.ads import invalidate_ads_cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            invalidate_ads_cache()  # must not raise
+
+    def test_bulk_create_staleness_is_fixed_by_calling_the_invalidator(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.models.discovery import AdsEntry
+        from icv_sitemaps.services.ads import invalidate_ads_cache
+
+        cache_key = "icv_sitemaps:ads_txt:"
+        cache.set(cache_key, "stale rendered content", timeout=3600)
+
+        AdsEntry.objects.bulk_create([AdsEntry(domain="google.com", publisher_id="pub-1", relationship="DIRECT")])
+        assert cache.get(cache_key) == "stale rendered content"
+
+        invalidate_ads_cache(is_app_ads=False)
+
+        assert cache.get(cache_key) is None
+
+    def test_signal_handler_still_invalidates_after_rewiring(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.testing.factories import AdsEntryFactory
+
+        cache_key = "icv_sitemaps:app_ads_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+
+        AdsEntryFactory(is_app_ads=True)
+
+        assert cache.get(cache_key) is None
+
+
+class TestInvalidateDiscoveryCache:
+    def test_deletes_the_key_for_the_given_file_type(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+        cache_key = "icv_sitemaps:discovery:llms_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+
+        invalidate_discovery_cache("llms_txt")
+
+        assert cache.get(cache_key) is None
+
+    def test_does_not_touch_a_different_file_types_key(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+        cache.set("icv_sitemaps:discovery:llms_txt:", "llms content", timeout=3600)
+        cache.set("icv_sitemaps:discovery:security_txt:", "security content", timeout=3600)
+
+        invalidate_discovery_cache("llms_txt")
+
+        assert cache.get("icv_sitemaps:discovery:llms_txt:") is None
+        assert cache.get("icv_sitemaps:discovery:security_txt:") == "security content"
+
+    def test_scopes_to_tenant(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+        cache.set("icv_sitemaps:discovery:llms_txt:acme", "acme content", timeout=3600)
+        cache.set("icv_sitemaps:discovery:llms_txt:other", "other content", timeout=3600)
+
+        invalidate_discovery_cache("llms_txt", tenant_id="acme")
+
+        assert cache.get("icv_sitemaps:discovery:llms_txt:acme") is None
+        assert cache.get("icv_sitemaps:discovery:llms_txt:other") == "other content"
+
+    def test_does_not_raise_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            invalidate_discovery_cache("llms_txt")  # must not raise
+
+    def test_bulk_create_staleness_is_fixed_by_calling_the_invalidator(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.models.discovery import DiscoveryFileConfig
+        from icv_sitemaps.services.discovery import invalidate_discovery_cache
+
+        cache_key = "icv_sitemaps:discovery:llms_txt:"
+        cache.set(cache_key, "stale rendered content", timeout=3600)
+
+        DiscoveryFileConfig.objects.bulk_create([DiscoveryFileConfig(file_type="llms_txt", content="Allow: /")])
+        assert cache.get(cache_key) == "stale rendered content"
+
+        invalidate_discovery_cache("llms_txt")
+
+        assert cache.get(cache_key) is None
+
+    def test_signal_handler_still_invalidates_after_rewiring(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.testing.factories import DiscoveryFileConfigFactory
+
+        cache_key = "icv_sitemaps:discovery:security_txt:"
+        cache.set(cache_key, "stale content", timeout=3600)
+
+        DiscoveryFileConfigFactory(file_type="security_txt")
+
+        assert cache.get(cache_key) is None

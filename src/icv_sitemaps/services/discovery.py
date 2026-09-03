@@ -87,6 +87,34 @@ def get_discovery_file_content(file_type: str, *, tenant_id: str = "") -> str | 
     return config.content
 
 
+def invalidate_discovery_cache(file_type: str, *, tenant_id: str = "") -> None:
+    """Delete the cached content for one discovery file type and tenant.
+
+    Named counterpart to :func:`icv_sitemaps.services.redirects.invalidate_redirect_cache`
+    (#29): a documented escape hatch for a consumer who writes
+    ``DiscoveryFileConfig`` rows with a raw
+    ``DiscoveryFileConfig.objects.bulk_create(...)`` call of their own,
+    which emits no ``post_save`` signal and so leaves the rendered
+    llms.txt/security.txt/humans.txt cache stale until
+    ``ICV_SITEMAPS_CACHE_TIMEOUT`` expires (#37).
+
+    ``DiscoveryFileConfig`` is keyed per ``file_type``
+    (``icv_sitemaps:discovery:{file_type}:{tenant_id}``), so *file_type*
+    is a required positional argument here, not a default: there is no
+    single "the" discovery cache to invalidate, and silently defaulting to
+    one file type would invalidate the wrong key for the other two. The
+    key matches the one built in ``handlers.py`` and ``views.py`` exactly.
+
+    Args:
+        file_type: One of ``"llms_txt"``, ``"security_txt"``, ``"humans_txt"``.
+        tenant_id: Tenant identifier.
+    """
+    from icv_sitemaps.cache import safe_delete
+
+    cache_key = f"icv_sitemaps:discovery:{file_type}:{tenant_id}"
+    safe_delete(cache_key)
+
+
 def set_discovery_file_content(
     file_type: str,
     content: str,
@@ -114,7 +142,6 @@ def set_discovery_file_content(
             ``Expires`` fields. ``llms_txt`` and ``humans_txt`` content is
             not validated, as no standard mandates their shape.
     """
-    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import DiscoveryFileConfig
 
     if file_type == "security_txt":
@@ -136,7 +163,6 @@ def set_discovery_file_content(
                 setattr(config, attr, value)
             config.save(update_fields=list(defaults.keys()))
 
-    cache_key = f"icv_sitemaps:discovery:{file_type}:{tenant_id}"
-    safe_delete(cache_key)
+    invalidate_discovery_cache(file_type, tenant_id=tenant_id)
 
     return config
