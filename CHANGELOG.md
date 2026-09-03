@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`invalidate_robots_cache`, `invalidate_ads_cache`, `invalidate_discovery_cache`**
+  (#37), extracted and exported alongside `invalidate_redirect_cache` (#29):
+  `RobotsRule`, `AdsEntry` and `DiscoveryFileConfig` shared the same
+  `bulk_create` staleness gap #29 fixed for `RedirectRule`. Cache
+  invalidation for these three models previously happened only via
+  `post_save`/`post_delete` signal handlers, which Django's `bulk_create`
+  never fires, leaving a stale render served until
+  `ICV_SITEMAPS_CACHE_TIMEOUT` (default 3600 seconds) expires even though
+  the rows already exist in the database. `handlers.py` and
+  `add_robots_rule`/`add_ads_entry`/`set_discovery_file_content` now call
+  these named functions instead of rebuilding cache-key strings inline; the
+  keys are unchanged. `invalidate_ads_cache` takes an `is_app_ads` keyword,
+  since `AdsEntry` maps to two distinct cache keys; `invalidate_discovery_cache`
+  takes `file_type` as a required positional argument, since
+  `DiscoveryFileConfig` is keyed per file type. See the README for the
+  raw-`bulk_create` caveat for each of the three models. No bulk-safe
+  creator equivalent to `bulk_create_redirects` is added for these three:
+  none has a high-volume machine-generated write pattern comparable to the
+  redirect tombstone workflow that motivated it.
+
 ## [2.0.0] - 2026-09-03
 
 ### Added
