@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`generate_index()` never checked the sitemap index itself against the
+  sitemap protocol's own limits** (#36). Section shards are already
+  capped at 50,000 URLs and 50 MiB via `ICV_SITEMAPS_MAX_URLS_PER_FILE`
+  and `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES`, but the index that lists those
+  shards had no equivalent check: it selected every `SitemapFile` row for
+  the tenant and appended one `<sitemap>` element per row with no bound.
+  No realistic tenant reaches the 50,000-entry cap (each entry represents
+  a whole shard of up to 50,000 URLs), and the byte cap, while nearer, is
+  still remote for the small, hand-built index document. The real defect
+  was an unbounded loop with nothing to catch it silently drifting past a
+  protocol limit rather than any specific tenant being at risk today.
+  `generate_index()` now counts the candidate `SitemapFile` rows and
+  measures the actual serialised, uncompressed XML bytes before writing,
+  raising `SitemapGenerationError` (and logging at `error` level) naming
+  whichever cap was exceeded, rather than writing a sitemap index a
+  crawler would reject.
+
 ## [2.0.0] - 2026-09-03
 
 ### Added
