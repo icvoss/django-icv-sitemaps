@@ -2,6 +2,7 @@
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from icv_sitemaps.models.base import BaseModel
@@ -161,8 +162,13 @@ class SitemapFile(BaseModel):
         help_text=_("SHA-256 hash of the file contents for change detection."),
     )
     generated_at = models.DateTimeField(
-        auto_now_add=True,
-        help_text=_("When this file was generated."),
+        default=timezone.now,
+        help_text=_(
+            "When this file's content was last generated. Carried forward from the "
+            "previous row when a regeneration finds the shard's checksum unchanged, "
+            "so this reflects content changes rather than every generation run "
+            "(issue #19)."
+        ),
     )
 
     class Meta:

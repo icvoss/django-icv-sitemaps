@@ -173,6 +173,71 @@ class TestRenderAdsTxt:
 
         assert "# Primary ad partner" in content
 
+    def test_empty_emits_iab_placeholder_record(self, db):
+        """Issue #22: an empty file is deprecated (IAB ads.txt v1.1 s3.2.1)."""
+        content = render_ads_txt()
+
+        assert content == "placeholder.example.com, placeholder, DIRECT, placeholder"
+
+    def test_empty_app_ads_also_emits_placeholder(self, db):
+        content = render_ads_txt(app_ads=True)
+
+        assert content == "placeholder.example.com, placeholder, DIRECT, placeholder"
+
+    def test_placeholder_omitted_when_active_entries_exist(self, db):
+        AdsEntryFactory(domain="google.com", publisher_id="pub-1", relationship="DIRECT")
+
+        content = render_ads_txt()
+
+        assert "placeholder.example.com" not in content
+
+    def test_placeholder_can_be_disabled_via_setting(self, db):
+        import icv_sitemaps.conf as conf_mod
+
+        with patch.object(conf_mod, "ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER", False):
+            content = render_ads_txt()
+
+        assert content == ""
+
+    def test_row_with_embedded_newline_is_skipped_not_rendered(self, db, caplog):
+        """Issue #18: a row already in the database with a stored newline
+        (written before this fix, or via objects.create()/bulk_create(),
+        which bypass add_ads_entry's write-side check and the model's
+        clean()) must not inject extra records into rendered output.
+        """
+        from icv_sitemaps.models.discovery import AdsEntry
+
+        # Bypasses add_ads_entry and clean()/full_clean() entirely, exactly
+        # like an admin edit or a pre-fix database row would.
+        AdsEntry.objects.create(
+            domain="google.com",
+            publisher_id="pub-1",
+            relationship="DIRECT",
+            comment="fine\nevil.example.com, 1, DIRECT",
+        )
+        AdsEntryFactory(domain="clean.com", publisher_id="pub-2", relationship="DIRECT")
+
+        with caplog.at_level("WARNING"):
+            content = render_ads_txt()
+
+        assert "evil.example.com" not in content
+        assert "google.com" not in content  # the whole bad row is omitted, not just the comment
+        assert "clean.com, pub-2, DIRECT" in content
+        assert "skipping AdsEntry" in caplog.text
+
+    def test_row_with_embedded_newline_in_domain_is_skipped(self, db):
+        from icv_sitemaps.models.discovery import AdsEntry
+
+        AdsEntry.objects.create(
+            domain="google.com\nevil.example.com, 1, DIRECT",
+            publisher_id="pub-1",
+            relationship="DIRECT",
+        )
+
+        content = render_ads_txt()
+
+        assert content == "placeholder.example.com, placeholder, DIRECT, placeholder"
+
 
 # ---------------------------------------------------------------------------
 # add_robots_rule
@@ -227,6 +292,95 @@ class TestAddAdsEntry:
         entry = add_ads_entry("google.com", "pub-2", "DIRECT", is_app_ads=True)
         assert entry.is_app_ads is True
 
+    def test_newline_in_domain_raises(self, db):
+        with pytest.raises(ValueError, match="must not contain newline"):
+            add_ads_entry("google.com\nevil.com, pub-1, DIRECT", "pub-1", "DIRECT")
+
+    def test_carriage_return_in_publisher_id_raises(self, db):
+        with pytest.raises(ValueError, match="must not contain newline"):
+            add_ads_entry("google.com", "pub-1\revil.com, pub-2, DIRECT", "DIRECT")
+
+    def test_newline_in_certification_id_raises(self, db):
+        with pytest.raises(ValueError, match="must not contain newline"):
+            add_ads_entry("google.com", "pub-1", "DIRECT", certification_id="abc\ninjected")
+
+    def test_newline_in_comment_raises(self, db):
+        with pytest.raises(ValueError, match="must not contain newline"):
+            add_ads_entry("google.com", "pub-1", "DIRECT", comment="fine\nevil.com, pub-9, DIRECT")
+
+    def test_newline_via_kwargs_route_is_rejected(self, db):
+        """Issue #18: comment is not a named parameter of add_ads_entry, so
+        it only ever arrives via the documented **kwargs passthrough
+        ("Additional field values passed to AdsEntry.objects.create").
+        The generic kwargs check must reject it before any AdsEntry row is
+        written, not just the four explicitly named parameters.
+        """
+        from icv_sitemaps.models.discovery import AdsEntry
+
+        with pytest.raises(ValueError, match="comment must not contain newline"):
+            add_ads_entry(
+                "google.com",
+                "pub-1",
+                "DIRECT",
+                **{"comment": "a\nevil.example.com, 1, DIRECT"},
+            )
+
+        assert not AdsEntry.objects.filter(domain="google.com").exists()
+
+
+# ---------------------------------------------------------------------------
+# AdsEntry model-level newline validation (issue #18)
+#
+# add_ads_entry defends its own callers with a ValueError (tested above),
+# but admin saves, objects.create() and bulk_create() bypass that function
+# entirely. The model's clean() and field validators are the backstop for
+# those paths.
+# ---------------------------------------------------------------------------
+
+
+class TestAdsEntryModelNewlineValidation:
+    def test_clean_rejects_newline_in_domain(self, db):
+        from django.core.exceptions import ValidationError
+
+        from icv_sitemaps.models import AdsEntry
+
+        entry = AdsEntry(
+            domain="google.com\nevil.com, pub-1, DIRECT",
+            publisher_id="pub-1",
+            relationship="DIRECT",
+        )
+
+        with pytest.raises(ValidationError):
+            entry.full_clean()
+
+    def test_clean_rejects_newline_in_comment(self, db):
+        from django.core.exceptions import ValidationError
+
+        from icv_sitemaps.models import AdsEntry
+
+        entry = AdsEntry(
+            domain="google.com",
+            publisher_id="pub-1",
+            relationship="DIRECT",
+            comment="fine\nevil.com, pub-9, DIRECT",
+        )
+
+        with pytest.raises(ValidationError):
+            entry.full_clean()
+
+    def test_clean_accepts_well_formed_entry(self, db):
+        from icv_sitemaps.models import AdsEntry
+
+        entry = AdsEntry(
+            domain="google.com",
+            publisher_id="pub-1",
+            relationship="DIRECT",
+            certification_id="cert-1",
+            comment="Primary partner",
+        )
+
+        entry.full_clean()  # Must not raise
+
 
 # ---------------------------------------------------------------------------
 # get_discovery_file_content / set_discovery_file_content
@@ -254,10 +408,11 @@ class TestDiscoveryFileServices:
         assert result is None
 
     def test_set_creates_config(self, db):
-        config = set_discovery_file_content("security_txt", "Contact: security@example.com")
+        content = "Contact: security@example.com\nExpires: 2027-12-31T23:59:59Z"
+        config = set_discovery_file_content("security_txt", content)
 
         assert config.pk is not None
-        assert config.content == "Contact: security@example.com"
+        assert config.content == content
         assert config.is_active is True
 
     def test_set_updates_existing_config(self, db):
@@ -275,6 +430,71 @@ class TestDiscoveryFileServices:
         assert get_discovery_file_content("llms_txt", tenant_id="a") == "tenant-a content"
         assert get_discovery_file_content("llms_txt", tenant_id="b") == "tenant-b content"
         assert get_discovery_file_content("llms_txt", tenant_id="") is None
+
+    def test_llms_txt_content_not_validated(self, db):
+        """No standard mandates llms.txt shape: any content is accepted."""
+        config = set_discovery_file_content("llms_txt", "anything goes here")
+
+        assert config.content == "anything goes here"
+
+    def test_humans_txt_content_not_validated(self, db):
+        """No standard mandates humans.txt shape: any content is accepted."""
+        config = set_discovery_file_content("humans_txt", "no particular structure required")
+
+        assert config.content == "no particular structure required"
+
+
+# ---------------------------------------------------------------------------
+# security.txt RFC 9116 validation (issue #20)
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityTxtValidation:
+    def test_missing_contact_raises(self, db):
+        with pytest.raises(ValueError, match="Contact"):
+            set_discovery_file_content("security_txt", "Expires: 2027-12-31T23:59:59Z")
+
+    def test_missing_expires_raises(self, db):
+        with pytest.raises(ValueError, match="Expires"):
+            set_discovery_file_content("security_txt", "Contact: mailto:security@example.com")
+
+    def test_duplicate_expires_raises(self, db):
+        content = "Contact: mailto:security@example.com\nExpires: 2027-12-31T23:59:59Z\nExpires: 2028-01-01T00:00:00Z"
+        with pytest.raises(ValueError, match="exactly one"):
+            set_discovery_file_content("security_txt", content)
+
+    def test_malformed_expires_timestamp_raises(self, db):
+        content = "Contact: mailto:security@example.com\nExpires: not-a-timestamp"
+        with pytest.raises(ValueError, match="RFC 3339"):
+            set_discovery_file_content("security_txt", content)
+
+    def test_empty_content_raises(self, db):
+        with pytest.raises(ValueError, match="Contact"):
+            set_discovery_file_content("security_txt", "")
+
+    def test_multiple_contact_lines_accepted(self, db):
+        """RFC 9116 s2.5.3 only requires 'at least one' Contact field."""
+        content = (
+            "Contact: mailto:security@example.com\nContact: https://example.com/report\nExpires: 2027-12-31T23:59:59Z"
+        )
+        config = set_discovery_file_content("security_txt", content)
+
+        assert config.content == content
+
+    def test_valid_content_saves_successfully(self, db):
+        content = "Contact: mailto:security@example.com\nExpires: 2027-06-30T00:00:00Z"
+        config = set_discovery_file_content("security_txt", content)
+
+        assert config.pk is not None
+        assert config.content == content
+
+    def test_expires_with_utc_offset_accepted(self, db):
+        """RFC 3339 allows a numeric UTC offset, not only the 'Z' suffix."""
+        content = "Contact: mailto:security@example.com\nExpires: 2027-12-31T23:59:59+00:00"
+
+        config = set_discovery_file_content("security_txt", content)
+
+        assert config.pk is not None
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +737,149 @@ class TestGenerateSection:
         assert url_count == 5
         # Should have been split into 2 files (3 + 2)
         assert SitemapFile.objects.filter(section=section).count() == 2
+
+
+class TestGenerateSectionLastmod:
+    """Issue #19: SitemapFile.generated_at reflects content changes, not runs."""
+
+    def _make_section_with_articles(self, settings, tmp_path, titles):
+        settings.MEDIA_ROOT = str(tmp_path)
+        from sitemaps_testapp.models import Article
+
+        Article.objects.all().delete()
+        for title in titles:
+            Article.objects.create(title=title, slug=title.lower().replace(" ", "-"), is_published=True)
+
+        return SitemapSectionFactory(
+            name="articles",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+    def _patch_conf(self, conf_mod, *, max_urls=50000):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_GZIP", False))
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_STORAGE_PATH", "sitemaps/"))
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_BASE_URL", "https://example.com"))
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_MAX_URLS_PER_FILE", max_urls))
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_MAX_FILE_SIZE_BYTES", 52428800))
+        stack.enter_context(patch.object(conf_mod, "ICV_SITEMAPS_BATCH_SIZE", 5000))
+        return stack
+
+    def test_unchanged_content_preserves_generated_at(self, db, tmp_path, settings):
+        import icv_sitemaps.conf as conf_mod
+
+        section = self._make_section_with_articles(settings, tmp_path, ["Article 1", "Article 2"])
+
+        with self._patch_conf(conf_mod):
+            generate_section(section)
+
+        first = SitemapFile.objects.get(section=section, sequence=0)
+        first_generated_at = first.generated_at
+        first_checksum = first.checksum
+        assert first_checksum  # sanity: a real checksum was computed
+
+        section.is_stale = True
+        section.save(update_fields=["is_stale"])
+
+        with self._patch_conf(conf_mod):
+            generate_section(section, force=True)
+
+        second = SitemapFile.objects.get(section=section, sequence=0)
+        assert second.checksum == first_checksum
+        assert second.generated_at == first_generated_at
+
+    def test_changed_content_advances_generated_at(self, db, tmp_path, settings):
+        import icv_sitemaps.conf as conf_mod
+
+        section = self._make_section_with_articles(settings, tmp_path, ["Article 1", "Article 2"])
+
+        with self._patch_conf(conf_mod):
+            generate_section(section)
+
+        first = SitemapFile.objects.get(section=section, sequence=0)
+        first_generated_at = first.generated_at
+        first_checksum = first.checksum
+
+        # Change the underlying content: add a third article so the shard's
+        # bytes, and therefore its checksum, differ.
+        from sitemaps_testapp.models import Article
+
+        Article.objects.create(title="Article 3", slug="article-3", is_published=True)
+        section.is_stale = True
+        section.save(update_fields=["is_stale"])
+
+        with self._patch_conf(conf_mod):
+            generate_section(section, force=True)
+
+        second = SitemapFile.objects.get(section=section, sequence=0)
+        assert second.checksum != first_checksum
+        assert second.generated_at != first_generated_at
+
+    def test_index_lastmod_unchanged_when_content_unchanged(self, db, tmp_path, settings):
+        """The index's <lastmod> for a shard must not move when its content did not."""
+        import icv_sitemaps.conf as conf_mod
+
+        section = self._make_section_with_articles(settings, tmp_path, ["Article 1"])
+
+        with self._patch_conf(conf_mod):
+            generate_section(section)
+            first_path = generate_index()
+            from django.core.files.storage import default_storage
+
+            with default_storage.open(first_path, "rb") as fh:
+                first_index_content = fh.read().decode("utf-8")
+
+            section.is_stale = True
+            section.save(update_fields=["is_stale"])
+            generate_section(section, force=True)
+            second_path = generate_index()
+
+            with default_storage.open(second_path, "rb") as fh:
+                second_index_content = fh.read().decode("utf-8")
+
+        assert first_index_content == second_index_content
+
+    def test_shard_count_shrinking_does_not_carry_stale_timestamp(self, db, tmp_path, settings):
+        """A sequence reused by genuinely different content must not inherit
+        the old timestamp just because the sequence number matches."""
+        import icv_sitemaps.conf as conf_mod
+
+        section = self._make_section_with_articles(settings, tmp_path, ["Article 1", "Article 2", "Article 3"])
+
+        # Force 3 shards, one URL each.
+        with self._patch_conf(conf_mod, max_urls=1):
+            generate_section(section)
+
+        assert SitemapFile.objects.filter(section=section).count() == 3
+        shard_0 = SitemapFile.objects.get(section=section, sequence=0)
+        shard_0_generated_at = shard_0.generated_at
+        shard_0_checksum = shard_0.checksum
+
+        # Shrink to a single article, keeping the *last* one by pk so the
+        # sole remaining shard (sequence 0) holds a different article's URL
+        # than the first run's sequence-0 shard did (which held "Article 1",
+        # the first by pk, under one-URL-per-shard ordering).
+        from sitemaps_testapp.models import Article
+
+        Article.objects.exclude(pk=Article.objects.order_by("pk").last().pk).delete()
+        section.is_stale = True
+        section.save(update_fields=["is_stale"])
+
+        with self._patch_conf(conf_mod, max_urls=1):
+            generate_section(section, force=True)
+
+        assert SitemapFile.objects.filter(section=section).count() == 1
+        remaining = SitemapFile.objects.get(section=section, sequence=0)
+        # Content differs (different article), so the checksum differs and
+        # the timestamp must not have been carried forward from the old
+        # sequence-0 row, even though the sequence number is reused.
+        if remaining.checksum == shard_0_checksum:
+            pytest.fail("test setup produced identical content; cannot assert timestamp behaviour")
+        assert remaining.generated_at != shard_0_generated_at
 
 
 class TestGenerateSectionFailure:

@@ -7,6 +7,75 @@
 - **Django 6.1 added to the CI test matrix** and declared via the
   `Framework :: Django :: 6.1` classifier.
 
+### Fixed
+
+- **ads.txt and app-ads.txt output was injectable via a stored newline**
+  (#18). `render_ads_txt` interpolated `AdsEntry.domain`, `publisher_id`,
+  `certification_id` and `comment` into output lines with no CR/LF
+  handling, so a value containing a newline injected extra records into
+  the rendered file. Defended at both the write boundary and the render
+  boundary, because a bad row can reach the renderer regardless of how it
+  got there (a database populated before this fix, or any write path that
+  bypasses application-level checks). On write, `add_ads_entry()` rejects
+  a newline in `domain`, `publisher_id`, `certification_id`, `comment`,
+  and now also any string passed through its documented `**kwargs`
+  passthrough, with a `ValueError`, matching the existing behaviour of
+  `add_robots_rule()`. Because `add_ads_entry()` is only one way to create
+  an `AdsEntry` (admin saves, `AdsEntry.objects.create()` and
+  `bulk_create()` all bypassed it), the same check is now also enforced on
+  the model itself: `domain`, `publisher_id`, `certification_id` and
+  `comment` each carry a `RegexValidator`, and `AdsEntry.clean()` raises a
+  `ValidationError` naming the offending field. A migration adds the new
+  field validators. On render, `render_ads_txt()` now checks each entry's
+  fields before emitting its line: a row with an embedded newline is
+  skipped (not stripped, which would silently turn a forged record into a
+  differently shaped, valid-looking one) and a warning is logged naming
+  the entry so an operator can find and fix it.
+
+- **Empty ads.txt / app-ads.txt served a zero-byte body** (#22). IAB
+  ads.txt v1.1 s3.2.1 deprecated the empty-file method for declaring "no
+  authorised sellers": it "should be ignored by consuming systems after
+  March 1, 2020". `render_ads_txt()` now emits the IAB placeholder record
+  (`placeholder.example.com, placeholder, DIRECT, placeholder`) when there
+  are no active entries for the tenant and file variant, for both ads.txt
+  and app-ads.txt. Set the new `ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER`
+  setting to `False` to restore the previous empty-body behaviour.
+
+- **security.txt accepted any content, including a blank file, with
+  neither of RFC 9116's mandatory fields enforced** (#20).
+  `DiscoveryFileConfig.content` was an opaque `TextField` and
+  `set_discovery_file_content()` did no validation and did not dispatch on
+  `file_type`. Saving `file_type="security_txt"` content now requires at
+  least one `Contact` field (RFC 9116 s2.5.3) and exactly one `Expires`
+  field (RFC 9116 s2.5.5) whose value is a well-formed RFC 3339 timestamp;
+  a violation raises a `ValueError` naming the problem, and the write is
+  rejected rather than saved. `llms_txt` and `humans_txt` content is
+  unaffected: no standard mandates their shape, so they are not validated.
+  Expiry is not checked at read time and signing (`Signature`, an RFC 9116
+  SHOULD, not a MUST) is not implemented; both are out of scope for this
+  fix.
+
+- **The sitemap index's `<lastmod>` reported when a shard was last
+  generated, not when its content last changed** (#19). `SitemapFile`
+  rows are deleted and recreated on every run, and `generated_at` was
+  `auto_now_add=True`, so the index timestamp advanced to "now" on every
+  regeneration, including the daily forced `regenerate_all_sitemaps` run,
+  even when nothing in the shard had changed. Search engines only trust
+  `lastmod` when it is consistently accurate, so this made the signal
+  worthless or actively misleading. `generate_section()` now compares
+  each regenerated shard's checksum against the previous row for the same
+  `(section, sequence)`, computed before the delete-and-recreate; when the
+  checksum is unchanged the prior `generated_at` is carried forward,
+  otherwise it is stamped with the current time as before. A shard whose
+  sequence number is reused for genuinely different content (for example
+  a section that shrinks and reflows its shards) is not affected, since
+  its checksum will differ. Per-URL `lastmod` in section sitemaps was
+  already correct (sourced from the model's `updated_at`) and is
+  unchanged. `SitemapFile.generated_at` changed from `auto_now_add=True`
+  to an explicitly settable `DateTimeField` (migration
+  `0006_alter_sitemapfile_generated_at`) so the carried-forward value is
+  not silently overwritten on create.
+
 ## [1.0.0] - 2026-08-09
 
 ### Fixed

@@ -737,6 +737,15 @@ def generate_section(
     # Track previously generated files for cleanup (BR-029).
     old_paths = set(section.files.values_list("storage_path", flat=True))
 
+    # Snapshot prior shard checksums and timestamps, keyed by sequence, so an
+    # unchanged shard can keep its old generated_at instead of being stamped
+    # with "now" purely because generation ran again (issue #19). Read before
+    # the delete-and-recreate below, since the old rows won't survive it.
+    previous_shards = {
+        seq: (checksum, gen_at)
+        for seq, checksum, gen_at in section.files.values_list("sequence", "checksum", "generated_at")
+    }
+
     new_files: list[dict] = []  # list of {sequence, path, url_count, size, checksum}
     file_sequence = 0
     total_urls = 0
@@ -781,9 +790,19 @@ def generate_section(
                 }
             )
 
-        # Update DB records for generated files.
+        # Update DB records for generated files. A shard whose sequence and
+        # checksum both match the previous run's row is unchanged content,
+        # so its generated_at carries forward instead of being reset to now
+        # (issue #19). A shard whose sequence is new, or whose checksum
+        # differs (including a section that shrank and reused a sequence
+        # for genuinely different content), is stamped with the current
+        # time as before.
+        now = django_timezone.now()
         section.files.all().delete()
         for f in new_files:
+            previous = previous_shards.get(f["sequence"])
+            unchanged = previous is not None and previous[0] == f["checksum"]
+            generated_at = previous[1] if unchanged else now
             SitemapFile.objects.create(
                 section=section,
                 sequence=f["sequence"],
@@ -791,6 +810,7 @@ def generate_section(
                 url_count=f["url_count"],
                 file_size_bytes=f["size"],
                 checksum=f["checksum"],
+                generated_at=generated_at,
             )
 
         # Remove stale storage files that are no longer referenced (BR-029).
@@ -844,7 +864,12 @@ def generate_section(
     # Regenerate the sitemap index (BR-012).
     generate_index(tenant_id=section.tenant_id)
 
-    # Conditional ping (BR-017): only ping when the index checksum changes.
+    # Ping (BR-017): gated on ICV_SITEMAPS_PING_ENABLED only. There is no
+    # index-checksum deduplication: _should_ping() does not compare
+    # checksums, it only reads the enabled setting, so every generation run
+    # pings when pinging is on. Low value to add: pinging is disabled by
+    # default, and Google and Bing have both retired their ping endpoints
+    # (see ICV_SITEMAPS_PING_ENGINES in conf.py).
     if _should_ping(tenant_id=section.tenant_id):
         from icv_sitemaps.conf import ICV_SITEMAPS_PING_ENABLED
 
@@ -1117,10 +1142,13 @@ def _generate_buffered(
 def _should_ping(*, tenant_id: str = "") -> bool:
     """Return True when search engine pinging is enabled.
 
-    Placeholder for the BR-017 index-checksum deduplication logic.  For now
-    this simply delegates to the ``ICV_SITEMAPS_PING_ENABLED`` setting so that
-    the conditional ping call in ``generate_section`` compiles and behaves
-    correctly.
+    Delegates entirely to the ``ICV_SITEMAPS_PING_ENABLED`` setting. This
+    does *not* deduplicate on the index checksum: a section that regenerates
+    with no content change still pings when pinging is enabled. That
+    dedup was never implemented; ``tenant_id`` is accepted for a future
+    per-tenant check but unused today. Left unimplemented deliberately:
+    pinging defaults to disabled, and Google and Bing have both retired
+    their ping endpoints, so the dedup has little value to add.
     """
     from icv_sitemaps.conf import ICV_SITEMAPS_PING_ENABLED
 

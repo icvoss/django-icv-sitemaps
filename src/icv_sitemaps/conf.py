@@ -56,6 +56,13 @@ ICV_SITEMAPS_ROBOTS_SITEMAP_URL: str = getattr(settings, "ICV_SITEMAPS_ROBOTS_SI
 # Cache TTL in seconds for rendered discovery files
 ICV_SITEMAPS_CACHE_TIMEOUT: int = getattr(settings, "ICV_SITEMAPS_CACHE_TIMEOUT", 3600)
 
+# Emit the IAB placeholder record ("placeholder.example.com, placeholder,
+# DIRECT, placeholder") when ads.txt or app-ads.txt has no active entries,
+# rather than serving an empty body. ads.txt v1.1 s3.2.1 deprecated the
+# empty-file method for declaring "no authorised sellers". Set to False to
+# restore the previous empty-body behaviour.
+ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER: bool = getattr(settings, "ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER", True)
+
 # Dotted path to tenant prefix callable
 ICV_SITEMAPS_TENANT_PREFIX_FUNC: str = getattr(settings, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "")
 
