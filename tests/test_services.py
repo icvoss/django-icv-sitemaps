@@ -1857,6 +1857,35 @@ class TestBulkCreateRedirects:
         assert result["created"] == 0
         assert result["errors"] == []
 
+    def test_created_count_is_partial_when_some_rows_conflict(self, db):
+        """created reflects only the rows that actually landed, not len(rows).
+
+        Mixes one pre-existing exact rule (conflicts, ignore_conflicts=True
+        silently drops it) with two brand-new exact rows in the same batch.
+        If created were computed as len(validated_rows) instead of the
+        before/after row-count delta, this would wrongly report 3 instead
+        of 2.
+        """
+        from icv_sitemaps.models.redirects import RedirectRule
+        from icv_sitemaps.services.redirects import add_redirect, bulk_create_redirects
+
+        add_redirect("/dup/", "/first/", 301, match_type="exact")
+
+        result = bulk_create_redirects(
+            [
+                {"source_pattern": "/dup/", "destination": "/second/", "match_type": "exact"},
+                {"source_pattern": "/new-one/", "destination": "/target-one/", "match_type": "exact"},
+                {"source_pattern": "/new-two/", "destination": "/target-two/", "match_type": "exact"},
+            ]
+        )
+
+        assert result["created"] == 2
+        assert result["errors"] == []
+        assert RedirectRule.objects.filter(source_pattern="/new-one/").exists()
+        assert RedirectRule.objects.filter(source_pattern="/new-two/").exists()
+        # The pre-existing row is untouched, not overwritten.
+        assert RedirectRule.objects.get(source_pattern="/dup/").destination == "/first/"
+
 
 class TestRecord404:
     def test_creates_entry(self, db):
