@@ -41,6 +41,16 @@ _SAFE_TENANT_RE = re.compile(r"^[\w\-]+$")
 # With batch_size=5000 and _GC_INTERVAL=10 this fires every ~50K rows.
 _GC_INTERVAL = 10
 
+# Sitemap index protocol limits (BR-IDX-004): a sitemap index is itself
+# bound by the same sitemaps.org caps as a sitemap file (50,000 <sitemap>
+# entries, 50 MiB uncompressed). Deliberately duplicated from, not shared
+# with, icv_sitemaps_validate.py's MAX_URLS/MAX_BYTES: sharing would need
+# this service module to import from management.commands, which is a
+# circular/layering risk for no real benefit, since both constants encode
+# a fixed external protocol limit that never changes independently.
+_INDEX_MAX_ENTRIES = 50_000
+_INDEX_MAX_BYTES = 52_428_800  # 50 MiB
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -1213,13 +1223,20 @@ def generate_index(*, tenant_id: str = "") -> str:
     """Generate the sitemap index XML listing all SitemapFile records.
 
     Returns the storage path of the written index file (BR-011, BR-012).
+
+    Raises :class:`~icv_sitemaps.exceptions.SitemapGenerationError` if the
+    index itself would exceed the sitemap protocol's own limits on entry
+    count or uncompressed byte size (BR-IDX-004). A sitemap index is bound
+    by the same caps as a sitemap file; unlike section shards, the index is
+    never split, so this is a loud failure rather than a silent shard-out.
     """
     from icv_sitemaps.conf import ICV_SITEMAPS_GZIP
+    from icv_sitemaps.exceptions import SitemapGenerationError
     from icv_sitemaps.models.sections import SitemapFile
 
     storage = _get_storage()
 
-    sitemap_files = (
+    sitemap_files = list(
         SitemapFile.objects.filter(
             section__is_active=True,
             section__tenant_id=tenant_id,
@@ -1228,9 +1245,18 @@ def generate_index(*, tenant_id: str = "") -> str:
         .order_by("section__name", "sequence")
     )
 
+    entry_count = len(sitemap_files)
+    if entry_count > _INDEX_MAX_ENTRIES:
+        message = (
+            f"generate_index: index would list {entry_count} <sitemap> entries, "
+            f"exceeding the sitemap protocol limit of {_INDEX_MAX_ENTRIES} entries per index."
+        )
+        logger.error(message)
+        raise SitemapGenerationError(message)
+
     base_url = _get_base_url().rstrip("/")
 
-    # Build the index XML (small — always buffered).
+    # Build the index XML (small, always buffered).
     ET.register_namespace("", SITEMAP_NS)
     root = ET.Element("sitemapindex", attrib={"xmlns": SITEMAP_NS})
 
@@ -1248,6 +1274,20 @@ def generate_index(*, tenant_id: str = "") -> str:
     sbuf.write('<?xml version="1.0" encoding="UTF-8"?>\n')
     tree.write(sbuf, encoding="unicode", xml_declaration=False)
     data = sbuf.getvalue().encode("utf-8")
+
+    # Byte cap is checked against the actual serialised, uncompressed XML,
+    # the same convention _generate_streaming/_generate_buffered use for
+    # section shards: the protocol limit applies to the uncompressed
+    # representation, so gzip (applied later by _write_buffered_to_storage)
+    # is irrelevant here.
+    data_size = len(data)
+    if data_size > _INDEX_MAX_BYTES:
+        message = (
+            f"generate_index: index is {data_size} bytes, "
+            f"exceeding the sitemap protocol limit of {_INDEX_MAX_BYTES} bytes (50 MiB) per index."
+        )
+        logger.error(message)
+        raise SitemapGenerationError(message)
 
     index_filename = "sitemap.xml"
     index_path = _storage_path(index_filename, tenant_id=tenant_id)
