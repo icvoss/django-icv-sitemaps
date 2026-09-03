@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Added
+
+- A Django system check (`icv_sitemaps.W001`) warning when
+  `ICV_SITEMAPS_BASE_URL` is empty (#34). Sitemap `<loc>` elements must be
+  absolute URLs; with the setting unset, `generate_index` silently emitted
+  a root-relative path, which is invalid per the sitemap protocol, while
+  `ping_search_engines` and `icv_sitemaps_ping` already surfaced the
+  problem on their own paths. The check now surfaces it on every
+  `manage.py` invocation too. It is a `Warning`, not an `Error`, and is not
+  gated on whether a `SitemapSection` is configured: the setting is
+  genuinely optional for a consumer who only serves robots.txt or ads.txt,
+  and a check that queries the database to decide severity would be a
+  startup-breakage risk during migrations, fresh installs, and
+  `collectstatic`.
+
+- **`invalidate_robots_cache`, `invalidate_ads_cache`, `invalidate_discovery_cache`**
+  (#37), extracted and exported alongside `invalidate_redirect_cache` (#29):
+  `RobotsRule`, `AdsEntry` and `DiscoveryFileConfig` shared the same
+  `bulk_create` staleness gap #29 fixed for `RedirectRule`. Cache
+  invalidation for these three models previously happened only via
+  `post_save`/`post_delete` signal handlers, which Django's `bulk_create`
+  never fires, leaving a stale render served until
+  `ICV_SITEMAPS_CACHE_TIMEOUT` (default 3600 seconds) expires even though
+  the rows already exist in the database. `handlers.py` and
+  `add_robots_rule`/`add_ads_entry`/`set_discovery_file_content` now call
+  these named functions instead of rebuilding cache-key strings inline; the
+  keys are unchanged. `invalidate_ads_cache` takes an `is_app_ads` keyword,
+  since `AdsEntry` maps to two distinct cache keys; `invalidate_discovery_cache`
+  takes `file_type` as a required positional argument, since
+  `DiscoveryFileConfig` is keyed per file type. See the README for the
+  raw-`bulk_create` caveat for each of the three models. No bulk-safe
+  creator equivalent to `bulk_create_redirects` is added for these three:
+  none has a high-volume machine-generated write pattern comparable to the
+  redirect tombstone workflow that motivated it.
+
+- **Conditional requests and `Cache-Control` on every sitemap and
+  discovery-file view** (#32, #33). Every response from
+  `sitemap_index_view`, `sitemap_file_view`, `robots_txt_view`,
+  `llms_txt_view`, `ads_txt_view`, `app_ads_txt_view`, `security_txt_view`
+  and `humans_txt_view` now carries a strong `ETag` (a SHA-256 hash of the
+  served bytes) and honours `If-None-Match` with a bodyless 304, so a
+  crawler polling on a schedule gets a cheap 304 instead of re-transferring
+  an unchanged sitemap or discovery file on every request.
+  `sitemap_file_view` additionally emits `Last-Modified` (and honours
+  `If-Modified-Since`) when a `SitemapFile` row exists for the served
+  storage path, read from that row's genuine, persisted `generated_at`;
+  every other view omits `Last-Modified` rather than fabricate one, since
+  none has an equivalent single-row timestamp to reach for (the sitemap
+  index and every rendered discovery file either have no backing row or
+  aggregate several rows with no single "this changed last" value). Every
+  response also carries `Cache-Control`, communicating the freshness
+  opinion `ICV_SITEMAPS_CACHE_TIMEOUT` already expressed server-side to
+  crawlers, CDNs, and reverse proxies for the first time. A response
+  served from the documented render-failure fallback in `robots_txt_view`,
+  `ads_txt_view`, and `app_ads_txt_view` is deliberately excluded from
+  both: an empty robots.txt or ads.txt body produced by a rendering
+  failure must never be told to a client or an intermediate cache as
+  validated, unchanged, or safe to reuse, which would otherwise turn a
+  transient failure into a much longer-lived one.
+
+- **`ICV_SITEMAPS_HTTP_CACHE_CONTROL`** (#33), overriding or disabling the
+  `Cache-Control` header above. Empty string (the default) derives
+  `"public, max-age=<ICV_SITEMAPS_CACHE_TIMEOUT>"`. The literal value
+  `"none"` omits the header entirely. Any other non-empty string is sent
+  verbatim, for an operator who wants a directive this package does not
+  model (`stale-while-revalidate`, `s-maxage`, `must-revalidate`, and so
+  on) without a code change.
+
 ### Fixed
 
 - **Missing PEP 561 `py.typed` marker** (#39). The package ships fully
