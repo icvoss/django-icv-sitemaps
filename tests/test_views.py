@@ -10,6 +10,7 @@ from icv_sitemaps.testing.factories import (
     AdsEntryFactory,
     DiscoveryFileConfigFactory,
     RobotsRuleFactory,
+    SitemapFileFactory,
 )
 
 
@@ -459,3 +460,310 @@ class TestCacheResilience:
 
         assert recovered.status_code == 200
         assert b"google.com, pub-123, DIRECT" in recovered.content
+
+
+# ---------------------------------------------------------------------------
+# HTTP caching: ETag, Last-Modified, Cache-Control (#32, #33)
+# ---------------------------------------------------------------------------
+
+
+class TestSitemapFileConditionalRequests:
+    def test_etag_emitted(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        response = client.get("/sitemaps/products-0.xml")
+
+        assert response.status_code == 200
+        assert response["ETag"]
+
+    def test_matching_if_none_match_returns_304_with_empty_body(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        first = client.get("/sitemaps/products-0.xml")
+        etag = first["ETag"]
+
+        second = client.get("/sitemaps/products-0.xml", HTTP_IF_NONE_MATCH=etag)
+
+        assert second.status_code == 304
+        assert second.content == b""
+
+    def test_non_matching_if_none_match_returns_200(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        response = client.get("/sitemaps/products-0.xml", HTTP_IF_NONE_MATCH='"not-the-real-etag"')
+
+        assert response.status_code == 200
+        assert response.content == xml
+
+    def test_last_modified_emitted_when_sitemapfile_row_exists(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+        SitemapFileFactory(storage_path="sitemaps/products-0.xml")
+
+        response = client.get("/sitemaps/products-0.xml")
+
+        assert response.status_code == 200
+        assert response["Last-Modified"]
+
+    def test_last_modified_omitted_with_no_sitemapfile_row(self, client, db, tmp_path, settings):
+        """A file placed directly in storage with no backing row has no honest mtime."""
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/hand-placed.xml", ContentFile(xml))
+
+        response = client.get("/sitemaps/hand-placed.xml")
+
+        assert response.status_code == 200
+        assert "Last-Modified" not in response
+
+    def test_if_modified_since_honoured_when_row_exists(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+        SitemapFileFactory(storage_path="sitemaps/products-0.xml")
+
+        first = client.get("/sitemaps/products-0.xml")
+        last_modified = first["Last-Modified"]
+
+        second = client.get("/sitemaps/products-0.xml", HTTP_IF_MODIFIED_SINCE=last_modified)
+
+        assert second.status_code == 304
+        assert second.content == b""
+
+    def test_sitemap_index_gets_etag_but_no_last_modified(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+        settings.ICV_SITEMAPS_GZIP = False
+        settings.ICV_SITEMAPS_BASE_URL = "https://example.com"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        index_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></sitemapindex>'
+        )
+        default_storage.save("sitemaps/sitemap.xml", ContentFile(index_xml))
+
+        response = client.get("/sitemap.xml")
+
+        assert response.status_code == 200
+        assert response["ETag"]
+        assert "Last-Modified" not in response
+
+    def test_head_request_omits_body_but_keeps_headers(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        response = client.head("/sitemaps/products-0.xml")
+
+        assert response.status_code == 200
+        assert response["ETag"]
+        assert response.content == b""
+
+
+class TestDiscoveryFileConditionalRequests:
+    def test_robots_txt_etag_emitted_and_if_none_match_returns_304(self, client, db):
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/")
+
+        first = client.get("/robots.txt")
+        assert first["ETag"]
+
+        second = client.get("/robots.txt", HTTP_IF_NONE_MATCH=first["ETag"])
+        assert second.status_code == 304
+        assert second.content == b""
+
+    def test_robots_txt_has_no_last_modified(self, client, db):
+        RobotsRuleFactory(user_agent="*", directive="disallow", path="/admin/")
+
+        response = client.get("/robots.txt")
+
+        assert "Last-Modified" not in response
+
+    def test_ads_txt_etag_emitted_and_if_none_match_returns_304(self, client, db):
+        AdsEntryFactory(domain="google.com", publisher_id="pub-123", relationship="DIRECT")
+
+        first = client.get("/ads.txt")
+        assert first["ETag"]
+
+        second = client.get("/ads.txt", HTTP_IF_NONE_MATCH=first["ETag"])
+        assert second.status_code == 304
+
+    def test_llms_txt_etag_emitted_and_if_none_match_returns_304(self, client, db):
+        DiscoveryFileConfigFactory(file_type="llms_txt", content="# llms.txt\nAllow: *")
+
+        first = client.get("/llms.txt")
+        assert first["ETag"]
+
+        second = client.get("/llms.txt", HTTP_IF_NONE_MATCH=first["ETag"])
+        assert second.status_code == 304
+
+    def test_security_txt_etag_emitted(self, client, db):
+        DiscoveryFileConfigFactory(
+            file_type="security_txt",
+            content="Contact: mailto:security@example.com",
+        )
+
+        response = client.get("/.well-known/security.txt")
+
+        assert response["ETag"]
+
+    def test_humans_txt_etag_emitted(self, client, db):
+        DiscoveryFileConfigFactory(file_type="humans_txt", content="/* TEAM */\nNigel Copley")
+
+        response = client.get("/humans.txt")
+
+        assert response["ETag"]
+
+    def test_robots_txt_render_failure_gets_no_etag_and_no_cache_control(self, client, db):
+        """The sharpest trap: a failed render must never look validated or cacheable."""
+        with patch(
+            "icv_sitemaps.services.robots.render_robots_txt",
+            side_effect=RuntimeError("boom"),
+        ):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert response.content == b""
+        assert "ETag" not in response
+        assert "Cache-Control" not in response
+
+    def test_ads_txt_render_failure_gets_no_etag_and_no_cache_control(self, client, db):
+        with patch(
+            "icv_sitemaps.services.ads.render_ads_txt",
+            side_effect=RuntimeError("boom"),
+        ):
+            response = client.get("/ads.txt")
+
+        assert response.status_code == 200
+        assert response.content == b""
+        assert "ETag" not in response
+        assert "Cache-Control" not in response
+
+    def test_app_ads_txt_render_failure_gets_no_etag_and_no_cache_control(self, client, db):
+        with patch(
+            "icv_sitemaps.services.ads.render_ads_txt",
+            side_effect=RuntimeError("boom"),
+        ):
+            response = client.get("/app-ads.txt")
+
+        assert response.status_code == 200
+        assert response.content == b""
+        assert "ETag" not in response
+        assert "Cache-Control" not in response
+
+    def test_render_failure_is_not_served_as_304_on_a_later_matching_etag(self, client, db):
+        """A render failure must not poison a later request into a bogus 304.
+
+        Even if a client happened to send an If-None-Match matching the
+        empty body's hash, the failed response carries no ETag at all, so
+        there is nothing for a conditional check to match against, and the
+        response is always a fresh 200.
+        """
+        empty_body_etag = '"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"'
+        with patch(
+            "icv_sitemaps.services.robots.render_robots_txt",
+            side_effect=RuntimeError("boom"),
+        ):
+            response = client.get("/robots.txt", HTTP_IF_NONE_MATCH=empty_body_etag)
+
+        assert response.status_code == 200
+        assert "ETag" not in response
+
+
+class TestCacheControlHeader:
+    def test_default_derives_max_age_from_cache_timeout(self, client, db):
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT", 1800):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert "max-age=1800" in response["Cache-Control"]
+        assert "public" in response["Cache-Control"]
+
+    def test_sitemap_file_gets_cache_control(self, client, db, tmp_path, settings):
+        settings.MEDIA_ROOT = str(tmp_path)
+        settings.ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
+
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        xml = b'<?xml version="1.0" encoding="UTF-8"?><urlset></urlset>'
+        default_storage.save("sitemaps/products-0.xml", ContentFile(xml))
+
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_CACHE_TIMEOUT", 3600):
+            response = client.get("/sitemaps/products-0.xml")
+
+        assert "max-age=3600" in response["Cache-Control"]
+
+    def test_setting_none_disables_the_header(self, client, db):
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_HTTP_CACHE_CONTROL", "none"):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert "Cache-Control" not in response
+
+    def test_setting_override_is_sent_verbatim(self, client, db):
+        with patch(
+            "icv_sitemaps.conf.ICV_SITEMAPS_HTTP_CACHE_CONTROL",
+            "public, max-age=60, stale-while-revalidate=30",
+        ):
+            response = client.get("/robots.txt")
+
+        assert response["Cache-Control"] == "public, max-age=60, stale-while-revalidate=30"
+
+    def test_render_failure_never_gets_cache_control_even_with_override_set(self, client, db):
+        """The override setting must not resurrect cacheability for a failed render."""
+        with (
+            patch("icv_sitemaps.conf.ICV_SITEMAPS_HTTP_CACHE_CONTROL", "public, max-age=999"),
+            patch(
+                "icv_sitemaps.services.robots.render_robots_txt",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            response = client.get("/robots.txt")
+
+        assert response.status_code == 200
+        assert "Cache-Control" not in response
