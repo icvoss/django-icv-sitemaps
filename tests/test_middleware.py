@@ -121,12 +121,17 @@ class TestRedirectMiddleware:
         rule.refresh_from_db()
         assert rule.hit_count == 1
 
-    def test_priority_ordering(self, db, rf, make_middleware):
+    def test_priority_ordering_within_match_type(self, db, rf, make_middleware):
+        """Priority only orders rules within the same match type.
+
+        Both rules here are ``prefix``, so priority is the deciding factor.
+        """
         RedirectRuleFactory(
             source_pattern="/path/",
             destination="/low-priority/",
             status_code=301,
             priority=10,
+            match_type="prefix",
         )
         RedirectRuleFactory(
             source_pattern="/path/",
@@ -141,6 +146,34 @@ class TestRedirectMiddleware:
         response = middleware(request)
 
         assert response["Location"] == "/high-priority/"
+
+    def test_exact_beats_prefix_regardless_of_priority(self, db, rf, make_middleware):
+        """An exact rule always wins over an overlapping prefix rule, even
+        when the prefix rule has a numerically lower (better) priority.
+
+        Fails against the pre-#24 code, which ordered purely by
+        ("priority", "pk") and let the prefix rule win.
+        """
+        RedirectRuleFactory(
+            source_pattern="/path/",
+            destination="/exact-wins/",
+            status_code=301,
+            priority=10,
+            match_type="exact",
+        )
+        RedirectRuleFactory(
+            source_pattern="/path/",
+            destination="/prefix-loses/",
+            status_code=302,
+            priority=1,
+            match_type="prefix",
+        )
+
+        middleware = make_middleware()
+        request = rf.get("/path/")
+        response = middleware(request)
+
+        assert response["Location"] == "/exact-wins/"
 
     def test_fail_open_on_error(self, db, rf, make_middleware):
         middleware = make_middleware()

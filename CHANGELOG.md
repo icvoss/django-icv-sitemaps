@@ -9,6 +9,35 @@
 
 ### Fixed
 
+- **Redirect rules were not evaluated in the documented order** (#24).
+  `check_redirect`'s docstring has always said rules are evaluated "exact
+  matches first, then prefix, then regex", but `get_cached_redirect_rules`
+  only ordered by `priority` and never took `match_type` into account. In
+  practice, a broad `prefix` rule at a lower `priority` number beat a more
+  specific `exact` rule at a higher one, contradicting the documented
+  contract. Redirect rules are now ordered by match type first (`exact`,
+  then `prefix`, then `regex`), then by `priority` within that match type,
+  then by primary key as a stable tiebreaker.
+
+  **This is a behaviour change** for any site with overlapping rules of
+  different match types: an `exact` rule now always wins over an
+  overlapping `prefix` or `regex` rule, regardless of `priority`, and a
+  `prefix` rule always wins over an overlapping `regex` rule. If you tuned
+  `priority` numbers to force a `prefix` or `regex` rule to win over an
+  `exact` rule for the same path, that workaround no longer applies; the
+  `exact` rule wins now, matching what the docstring always promised.
+  `priority` still controls ordering between rules of the *same* match
+  type, so most single-match-type setups are unaffected. This also fixes
+  the 410-tombstone case from #16: an `exact` rule for a deleted URL now
+  reliably beats a broad `prefix` rule that would otherwise have redirected
+  it away from a 410 response.
+
+  The redirect rule cache key gained a version segment
+  (`icv_sitemaps:redirects:v2:<tenant_id>`) so that a stale cache entry
+  populated by a pre-#24 process (holding the old priority-only ordering)
+  cannot be served after upgrade; it is simply missed and rebuilt with the
+  new ordering on first read.
+
 - **ads.txt and app-ads.txt output was injectable via a stored newline**
   (#18). `render_ads_txt` interpolated `AdsEntry.domain`, `publisher_id`,
   `certification_id` and `comment` into output lines with no CR/LF
