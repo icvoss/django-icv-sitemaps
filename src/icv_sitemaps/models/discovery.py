@@ -1,6 +1,8 @@
 """Discovery file models: robots.txt rules, ads.txt entries, and freeform config."""
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -9,6 +11,14 @@ from icv_sitemaps.models.choices import (
     DIRECTIVE_CHOICES,
     FILE_TYPE_CHOICES,
     RELATIONSHIP_CHOICES,
+)
+
+# Rejects a value containing a carriage return or line feed. Used on ads.txt
+# entry fields to stop a stored newline from injecting extra records into
+# the rendered ads.txt / app-ads.txt output (issue #18).
+no_newline_validator = RegexValidator(
+    regex=r"^[^\r\n]*$",
+    message=_("This field must not contain newline characters."),
 )
 
 
@@ -88,10 +98,12 @@ class AdsEntry(BaseModel):
     )
     domain = models.CharField(
         max_length=200,
+        validators=[no_newline_validator],
         help_text=_('Advertising system domain, e.g. "google.com".'),
     )
     publisher_id = models.CharField(
         max_length=200,
+        validators=[no_newline_validator],
         help_text=_("Publisher account ID assigned by the advertising system."),
     )
     relationship = models.CharField(
@@ -102,6 +114,7 @@ class AdsEntry(BaseModel):
     certification_id = models.CharField(
         max_length=200,
         blank=True,
+        validators=[no_newline_validator],
         help_text=_("Optional TAG-ID certification authority ID."),
     )
     is_app_ads = models.BooleanField(
@@ -115,6 +128,7 @@ class AdsEntry(BaseModel):
     comment = models.CharField(
         max_length=500,
         blank=True,
+        validators=[no_newline_validator],
         help_text=_("Optional comment for internal reference."),
     )
 
@@ -126,6 +140,17 @@ class AdsEntry(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.domain}, {self.publisher_id}, {self.relationship}"
+
+    def clean(self) -> None:
+        super().clean()
+        # Field validators already catch newlines on a full_clean() path
+        # (admin forms, explicit full_clean() calls), but a clear
+        # cross-field error here keeps the failure mode consistent with
+        # the rest of the package's clean() methods (see SitemapSection).
+        for field_name in ("domain", "publisher_id", "certification_id", "comment"):
+            value = getattr(self, field_name) or ""
+            if "\n" in value or "\r" in value:
+                raise ValidationError({field_name: _("This field must not contain newline characters.")})
 
 
 class DiscoveryFileConfig(BaseModel):
