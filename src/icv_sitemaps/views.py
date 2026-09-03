@@ -6,7 +6,6 @@ import logging
 import os
 import re
 
-from django.core.cache import cache
 from django.http import Http404, HttpResponse, HttpResponsePermanentRedirect
 from django.views.decorators.http import require_http_methods
 
@@ -214,21 +213,30 @@ def robots_txt_view(request) -> HttpResponse:
     Content is rendered from database ``RobotsRule`` records and settings,
     then cached for ``ICV_SITEMAPS_CACHE_TIMEOUT`` seconds.  Cache is
     invalidated automatically when rules change (see ``handlers.py``).
+
+    The cache is treated as an optimisation: a backend failure on read or
+    write degrades to regenerating (and not caching) the content rather
+    than raising.  A rendering failure is served as an empty body but is
+    never cached, since an empty robots.txt means "allow everything", the
+    opposite of a restrictive ruleset that failed to render, and caching
+    it would serve that for the full timeout.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.robots import render_robots_txt
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:robots_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         try:
             content = render_robots_txt(tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering robots.txt.")
             content = ""
-        cache.set(cache_key, content, timeout)
+        else:
+            safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain")
 
@@ -241,18 +249,19 @@ def llms_txt_view(request) -> HttpResponse:
     ``llms_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:discovery:llms_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         content = get_discovery_file_content("llms_txt", tenant_id=tenant_id)
         if content is None:
             raise Http404("llms.txt not configured.")
-        cache.set(cache_key, content, timeout)
+        safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain; charset=utf-8")
 
@@ -265,20 +274,22 @@ def ads_txt_view(request) -> HttpResponse:
     ``is_app_ads=False`` and cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.ads import render_ads_txt
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:ads_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         try:
             content = render_ads_txt(app_ads=False, tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering ads.txt.")
             content = ""
-        cache.set(cache_key, content, timeout)
+        else:
+            safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain")
 
@@ -290,20 +301,22 @@ def app_ads_txt_view(request) -> HttpResponse:
     Content is rendered from active ``AdsEntry`` records with
     ``is_app_ads=True`` and cached for ``ICV_SITEMAPS_CACHE_TIMEOUT`` seconds.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.ads import render_ads_txt
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:app_ads_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         try:
             content = render_ads_txt(app_ads=True, tenant_id=tenant_id)
         except Exception:
             logger.exception("Error rendering app-ads.txt.")
             content = ""
-        cache.set(cache_key, content, timeout)
+        else:
+            safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain")
 
@@ -316,18 +329,19 @@ def security_txt_view(request) -> HttpResponse:
     ``security_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:discovery:security_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         content = get_discovery_file_content("security_txt", tenant_id=tenant_id)
         if content is None:
             raise Http404("security.txt not configured.")
-        cache.set(cache_key, content, timeout)
+        safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain")
 
@@ -356,17 +370,18 @@ def humans_txt_view(request) -> HttpResponse:
     ``humans_txt`` type.  Content is cached for ``ICV_SITEMAPS_CACHE_TIMEOUT``
     seconds.
     """
+    from icv_sitemaps.cache import safe_get, safe_set
     from icv_sitemaps.services.discovery import get_discovery_file_content
 
     tenant_id = _get_tenant_id(request)
     cache_key = f"icv_sitemaps:discovery:humans_txt:{tenant_id}"
     timeout = _get_cache_timeout()
 
-    content = cache.get(cache_key)
+    content = safe_get(cache_key)
     if content is None:
         content = get_discovery_file_content("humans_txt", tenant_id=tenant_id)
         if content is None:
             raise Http404("humans.txt not configured.")
-        cache.set(cache_key, content, timeout)
+        safe_set(cache_key, content, timeout)
 
     return HttpResponse(content, content_type="text/plain")

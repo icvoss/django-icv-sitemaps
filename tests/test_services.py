@@ -1491,6 +1491,43 @@ class TestCheckRedirect:
         assert check_redirect("/path/", tenant_id="a") is not None
         assert check_redirect("/path/", tenant_id="b") is None
 
+    def test_saving_a_higher_precedence_rule_invalidates_the_cache_check_reads(self, db, settings):
+        """Invalidation must target the exact key ``get_cached_redirect_rules`` reads.
+
+        Populates the redirect cache via ``check_redirect`` (a prefix rule),
+        then saves a new higher-precedence exact rule for the same path via
+        the model layer directly (exercising the ``on_redirect_rule_save``
+        signal handler in ``handlers.py``, not ``add_redirect``, which
+        already invalidates on its own). If the handler rebuilt a cache key
+        from a literal instead of calling ``invalidate_redirect_cache``, it
+        would delete a stale (or wrongly-versioned) key that
+        ``get_cached_redirect_rules`` never reads, and this test would
+        observe the first, cached (prefix) result forever.
+        """
+        from icv_sitemaps.services.redirects import add_redirect, check_redirect
+        from icv_sitemaps.testing.factories import RedirectRuleFactory
+
+        with patch("icv_sitemaps.conf.ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT", 3600):
+            add_redirect("/path/", "/prefix-destination/", 301, match_type="prefix")
+
+            # Populate the cache.
+            first = check_redirect("/path/")
+            assert first["destination"] == "/prefix-destination/"
+
+            # Save a new higher-precedence (exact) rule via the model layer,
+            # exercising on_redirect_rule_save rather than add_redirect.
+            RedirectRuleFactory(
+                source_pattern="/path/",
+                destination="/exact-destination/",
+                match_type="exact",
+                status_code=302,
+            )
+
+            second = check_redirect("/path/")
+
+        assert second is not None
+        assert second["destination"] == "/exact-destination/"
+
 
 class TestAddRedirect:
     def test_creates_rule(self, db):
@@ -1602,3 +1639,90 @@ class TestGetTop404s:
 
         results = list(get_top_404s(min_hits=5))
         assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cache resilience (#9)
+#
+# The write-path service functions below invalidate a cache key after
+# mutating the database. Before this fix, an unreachable cache backend made
+# the write itself raise: add_robots_rule, add_ads_entry,
+# set_discovery_file_content and add_redirect (via invalidate_redirect_cache)
+# all called cache.delete() unguarded. A failed delete is deliberately not
+# swallowed silently: it is logged at WARNING because it leaves stale
+# content cached for up to the timeout, but the write itself must still
+# succeed.
+# ---------------------------------------------------------------------------
+
+
+class TestServiceWritesSurviveCacheDeleteFailure:
+    def test_add_robots_rule_succeeds_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            rule = add_robots_rule("*", "disallow", "/admin/")
+
+        assert rule.pk is not None
+
+    def test_add_ads_entry_succeeds_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            entry = add_ads_entry("google.com", "pub-1", "DIRECT")
+
+        assert entry.pk is not None
+
+    def test_set_discovery_file_content_succeeds_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            config = set_discovery_file_content("llms_txt", "content")
+
+        assert config.pk is not None
+        assert config.content == "content"
+
+    def test_add_redirect_succeeds_when_cache_delete_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.redirects import add_redirect
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            rule = add_redirect("/old/", "/new/", 301)
+
+        assert rule.pk is not None
+
+    def test_invalidate_redirect_cache_does_not_raise(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.redirects import invalidate_redirect_cache
+
+        with patch.object(cache, "delete", side_effect=ConnectionError("redis down")):
+            invalidate_redirect_cache()  # must not raise
+
+
+class TestGetCachedRedirectRulesSurvivesCacheFailure:
+    def test_returns_rules_when_cache_get_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
+
+        add_redirect("/old/", "/new/", 301)
+
+        with patch.object(cache, "get", side_effect=ConnectionError("redis down")):
+            rules = get_cached_redirect_rules()
+
+        assert len(rules) == 1
+        assert rules[0]["destination"] == "/new/"
+
+    def test_returns_rules_when_cache_set_raises(self, db):
+        from django.core.cache import cache
+
+        from icv_sitemaps.services.redirects import add_redirect, get_cached_redirect_rules
+
+        add_redirect("/old/", "/new/", 301)
+
+        with patch.object(cache, "set", side_effect=ConnectionError("redis down")):
+            rules = get_cached_redirect_rules()
+
+        assert len(rules) == 1
+        assert rules[0]["destination"] == "/new/"

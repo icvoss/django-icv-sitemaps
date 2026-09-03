@@ -145,8 +145,7 @@ def add_robots_rule(
     Raises:
         ValueError: If ``directive`` or ``path`` is invalid.
     """
-    from django.core.cache import cache
-
+    from icv_sitemaps.cache import safe_delete
     from icv_sitemaps.models.discovery import RobotsRule
 
     directive_lower = directive.lower()
@@ -173,6 +172,6 @@ def add_robots_rule(
     )
 
     cache_key = f"icv_sitemaps:robots_txt:{tenant_id}"
-    cache.delete(cache_key)
+    safe_delete(cache_key)
 
     return rule
