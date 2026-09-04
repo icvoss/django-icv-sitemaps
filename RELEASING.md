@@ -93,7 +93,7 @@ summary, not just a commit list.
 
 ## Django pin in the publish workflow
 
-The `test` job in `.github/workflows/publish.yml` pins `Django~=5.1.0`. When
+The `test` job in `.github/workflows/publish.yml` pins `Django~=5.2.0`. When
 you raise the package's minimum Django in `pyproject.toml`, update the pin in
 the same PR, or the tagged build's test job can fail to resolve dependencies
 and block the publish.
