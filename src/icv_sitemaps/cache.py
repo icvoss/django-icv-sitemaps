@@ -1,4 +1,4 @@
-"""Fail-open wrappers around ``django.core.cache.cache``.
+"""Fail-open wrappers around the ``ICV_CACHES_ALIAS`` cache (ADR-037).
 
 The package treats the configured cache as an optimisation, never a
 dependency: every read, write and invalidation the package performs goes
@@ -29,10 +29,12 @@ logger = logging.getLogger(__name__)
 
 def safe_get(cache_key: str, default: Any = None) -> Any:
     """Return ``cache.get(cache_key)``, or *default* if the backend raises."""
-    from django.core.cache import cache
+    from django.core.cache import caches
+
+    from icv_sitemaps.conf import ICV_CACHES_ALIAS
 
     try:
-        return cache.get(cache_key, default)
+        return caches[ICV_CACHES_ALIAS].get(cache_key, default)
     except Exception:
         logger.exception("icv_sitemaps: cache backend raised on get(%r), treating as a cache miss.", cache_key)
         return default
@@ -40,10 +42,12 @@ def safe_get(cache_key: str, default: Any = None) -> Any:
 
 def safe_set(cache_key: str, value: Any, timeout: int | None = None) -> None:
     """Call ``cache.set(cache_key, value, timeout)``, swallowing backend errors."""
-    from django.core.cache import cache
+    from django.core.cache import caches
+
+    from icv_sitemaps.conf import ICV_CACHES_ALIAS
 
     try:
-        cache.set(cache_key, value, timeout)
+        caches[ICV_CACHES_ALIAS].set(cache_key, value, timeout)
     except Exception:
         logger.exception("icv_sitemaps: cache backend raised on set(%r), value will not be cached.", cache_key)
 
@@ -57,10 +61,12 @@ def safe_delete(cache_key: str) -> None:
     monitoring rather than only to someone debugging with verbose logging
     enabled.
     """
-    from django.core.cache import cache
+    from django.core.cache import caches
+
+    from icv_sitemaps.conf import ICV_CACHES_ALIAS
 
     try:
-        cache.delete(cache_key)
+        caches[ICV_CACHES_ALIAS].delete(cache_key)
     except Exception:
         logger.warning(
             "icv_sitemaps: cache backend raised on delete(%r); stale content may be served for up to the "

@@ -71,19 +71,16 @@ def _resolve_model(model_path: str):
 
 
 def _get_storage():
-    """Return the configured storage backend instance."""
-    from django.core.exceptions import ImproperlyConfigured
-    from django.core.files.storage import Storage, default_storage
+    """Return the configured storage backend instance.
 
-    from icv_sitemaps.conf import ICV_SITEMAPS_STORAGE_BACKEND
+    Delegates to ``icv_sitemaps.storage.get_storage()``, the single
+    resolution point for the whole package (ADR-037). Kept as a
+    module-level name here because it is cited by the spec and imported by
+    ``services/sections.py``.
+    """
+    from icv_sitemaps.storage import get_storage
 
-    backend_path = ICV_SITEMAPS_STORAGE_BACKEND
-    if backend_path == "django.core.files.storage.default_storage":
-        return default_storage
-    StorageClass = import_string(backend_path)
-    if not (isinstance(StorageClass, type) and issubclass(StorageClass, Storage)):
-        raise ImproperlyConfigured(f"ICV_SITEMAPS_STORAGE_BACKEND {backend_path!r} is not a Django Storage subclass.")
-    return StorageClass()
+    return get_storage()
 
 
 def _storage_path(filename: str, tenant_id: str = "") -> str:

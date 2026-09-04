@@ -4,6 +4,8 @@ Django settings for icv-sitemaps tests.
 Minimal configuration — no migration modules so syncdb creates tables directly.
 """
 
+import os
+
 SECRET_KEY = "icv-sitemaps-test-secret-key"  # noqa: S105
 
 INSTALLED_APPS = [
@@ -45,3 +47,8 @@ ICV_SITEMAPS_ASYNC_GENERATION = False  # Never kick off Celery in unit tests
 ICV_SITEMAPS_PING_ENABLED = False  # Never hit real search engines in tests
 ICV_SITEMAPS_GZIP = False  # Simpler storage assertions
 ICV_SITEMAPS_CACHE_TIMEOUT = 0  # No caching in tests
+
+if os.environ.get("ICV_SITEMAPS_TEST_AUTH_OVERRIDE"):
+    # Exercised by tests/test_models.py in a subprocess: proves the user FK
+    # follows ICV_AUTH_USER_MODEL rather than AUTH_USER_MODEL (ADR-037).
+    ICV_AUTH_USER_MODEL = os.environ["ICV_SITEMAPS_TEST_AUTH_OVERRIDE"]

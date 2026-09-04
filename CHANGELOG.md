@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`ICV_SITEMAPS_STORAGE_BACKEND` is now honoured everywhere, not only by
+  generation** (#52). Previously only file generation read the configured
+  storage backend; every other storage access (the sitemap index and shard
+  views, the orphan-file pruning task, and both the `icv_sitemaps_setup` and
+  `icv_sitemaps_validate` management commands) imported Django's
+  `default_storage` directly. A project pointing storage at something other
+  than the default (S3, for example) got files written to that backend but
+  served, pruned and validated against the default backend instead, so
+  requests for a generated sitemap 404'd. All storage access now goes
+  through a single resolution point (`icv_sitemaps.storage.get_storage()`),
+  so views, pruning and both commands read the same storage generation
+  writes to.
+
+### Added
+
+- **Three fleet-global settings** (ADR-037): `ICV_STORAGES_ALIAS`,
+  `ICV_CACHES_ALIAS` and `ICV_AUTH_USER_MODEL`. Each mirrors a Django-native
+  concern (`STORAGES`, `CACHES`, `AUTH_USER_MODEL`) with an ICV-prefixed
+  override that falls back to stock Django behaviour when unset, so a
+  project that configures nothing sees no change. `ICV_STORAGES_ALIAS`
+  selects which alias in `STORAGES` icv-sitemaps writes generated files to;
+  `ICV_CACHES_ALIAS` selects which alias in `CACHES` icv-sitemaps caches
+  through; `ICV_AUTH_USER_MODEL` selects which user model the
+  `DiscoveryFileConfig.last_modified_by` foreign key targets.
+- `icv_sitemaps.W002` system check, warning when the deprecated
+  `ICV_SITEMAPS_STORAGE_BACKEND` is set.
+
+### Deprecated
+
+- `ICV_SITEMAPS_STORAGE_BACKEND` in favour of `ICV_STORAGES_ALIAS` (ADR-037).
+  Still honoured when set; a `manage.py check` now warns via
+  `icv_sitemaps.W002`. Removed in the next minor release.
+
 ## [3.0.0] - 2026-09-03
 
 ### Added

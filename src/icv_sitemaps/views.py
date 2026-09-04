@@ -174,11 +174,11 @@ def sitemap_index_view(request) -> HttpResponse:
     files) and no other genuinely persisted modification time, so this
     view omits the header rather than fabricate one.
     """
-    from django.core.files.storage import default_storage
-
     from icv_sitemaps.conf import ICV_SITEMAPS_GZIP, ICV_SITEMAPS_MAX_FILE_SIZE_BYTES, ICV_SITEMAPS_STORAGE_PATH
     from icv_sitemaps.services.generation import generate_index
+    from icv_sitemaps.storage import get_storage
 
+    storage = get_storage()
     tenant_id = _get_tenant_id(request)
 
     storage_dir = ICV_SITEMAPS_STORAGE_PATH.rstrip("/")
@@ -189,8 +189,8 @@ def sitemap_index_view(request) -> HttpResponse:
     # Attempt to serve from storage (prefer gz when GZIP enabled)
     for path in [gz_path, index_path] if ICV_SITEMAPS_GZIP else [index_path]:
         try:
-            if default_storage.exists(path):
-                file_size = default_storage.size(path)
+            if storage.exists(path):
+                file_size = storage.size(path)
                 if file_size > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES:
                     logger.warning(
                         "Sitemap index at %r exceeds size limit (%d > %d bytes) — refusing to serve.",
@@ -199,7 +199,7 @@ def sitemap_index_view(request) -> HttpResponse:
                         ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
                     )
                     raise Http404("Sitemap index file exceeds size limit.")
-                with default_storage.open(path, "rb") as fh:
+                with storage.open(path, "rb") as fh:
                     content = fh.read()
                 response = _sitemap_response(content, path)
                 return _finalise_cacheable_response(request, response, content=content)
@@ -213,8 +213,8 @@ def sitemap_index_view(request) -> HttpResponse:
     try:
         generate_index(tenant_id=tenant_id)
         for path in [gz_path, index_path] if ICV_SITEMAPS_GZIP else [index_path]:
-            if default_storage.exists(path):
-                file_size = default_storage.size(path)
+            if storage.exists(path):
+                file_size = storage.size(path)
                 if file_size > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES:
                     logger.warning(
                         "Generated sitemap index at %r exceeds size limit (%d > %d bytes) — refusing to serve.",
@@ -223,7 +223,7 @@ def sitemap_index_view(request) -> HttpResponse:
                         ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
                     )
                     raise Http404("Sitemap index file exceeds size limit.")
-                with default_storage.open(path, "rb") as fh:
+                with storage.open(path, "rb") as fh:
                     content = fh.read()
                 response = _sitemap_response(content, path)
                 return _finalise_cacheable_response(request, response, content=content)
@@ -251,10 +251,11 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
     fabricated "now". A file served with no matching row (for example one
     placed directly in storage) gets no ``Last-Modified`` header.
     """
-    from django.core.files.storage import default_storage
-
     from icv_sitemaps.conf import ICV_SITEMAPS_MAX_FILE_SIZE_BYTES, ICV_SITEMAPS_STORAGE_PATH
     from icv_sitemaps.models.sections import SitemapFile
+    from icv_sitemaps.storage import get_storage
+
+    storage = get_storage()
 
     if not _validate_filename(filename):
         raise Http404("Invalid filename.")
@@ -263,10 +264,10 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
     storage_path = f"{storage_dir}/{filename}"
 
     try:
-        if not default_storage.exists(storage_path):
+        if not storage.exists(storage_path):
             raise Http404(f"Sitemap file not found: {filename!r}")
 
-        file_size = default_storage.size(storage_path)
+        file_size = storage.size(storage_path)
         if file_size > ICV_SITEMAPS_MAX_FILE_SIZE_BYTES:
             logger.warning(
                 "Sitemap file at %r exceeds size limit (%d > %d bytes) — refusing to serve.",
@@ -276,7 +277,7 @@ def sitemap_file_view(request, filename: str) -> HttpResponse:
             )
             raise Http404("Sitemap file exceeds size limit.")
 
-        with default_storage.open(storage_path, "rb") as fh:
+        with storage.open(storage_path, "rb") as fh:
             content = fh.read()
 
         response = _sitemap_response(content, storage_path)

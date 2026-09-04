@@ -710,7 +710,10 @@ sensible default so the package works out of the box for local development.
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `ICV_SITEMAPS_BASE_URL` | `str` | `""` | Base URL for absolute sitemap URLs (e.g. `"https://example.com"`). **Required**: raises `ImproperlyConfigured` at generation time if empty |
-| `ICV_SITEMAPS_STORAGE_BACKEND` | `str` | `"django.core.files.storage.default_storage"` | Dotted path to Django storage backend for generated files |
+| `ICV_STORAGES_ALIAS` | `str` | `"default"` | Which alias in your `STORAGES` setting icv-sitemaps writes generated files to and reads them back from. Fleet-wide convention (ADR-037); falls back to Django's own `storages["default"]` |
+| `ICV_CACHES_ALIAS` | `str` | `"default"` | Which alias in your `CACHES` setting icv-sitemaps caches through. Fleet-wide convention (ADR-037); falls back to Django's own `caches["default"]` |
+| `ICV_AUTH_USER_MODEL` | `str` | `settings.AUTH_USER_MODEL` | Which user model icv-sitemaps' `last_modified_by` FK targets. Fleet-wide convention (ADR-037); a project that configures nothing gets `AUTH_USER_MODEL` |
+| `ICV_SITEMAPS_STORAGE_BACKEND` | `str` | `"django.core.files.storage.default_storage"` | **Deprecated**, use `ICV_STORAGES_ALIAS` instead. Dotted path to a Django storage backend for generated files; still honoured when set, removed in the next minor release (see `icv_sitemaps.W002`) |
 | `ICV_SITEMAPS_STORAGE_PATH` | `str` | `"sitemaps/"` | Base path within the storage backend |
 | `ICV_SITEMAPS_MAX_URLS_PER_FILE` | `int` | `50000` | Maximum URLs per file (protocol limit: 50,000) |
 | `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` | `int` | `52428800` | Maximum file size in bytes (protocol limit: 50 MB) |
@@ -864,7 +867,12 @@ discovery files. Sitemap files are stored with tenant-prefixed paths
 ```python
 # settings.py
 ICV_SITEMAPS_BASE_URL = "https://example.com"
-ICV_SITEMAPS_STORAGE_BACKEND = "storages.backends.s3boto3.S3Boto3Storage"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "sitemaps": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+ICV_STORAGES_ALIAS = "sitemaps"
 ICV_SITEMAPS_STORAGE_PATH = "sitemaps/"
 ICV_SITEMAPS_GZIP = True
 ICV_SITEMAPS_PING_ENGINES = ["google", "bing"]

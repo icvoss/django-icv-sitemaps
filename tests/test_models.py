@@ -1,9 +1,17 @@
 """Tests for icv-sitemaps models."""
 
+import os
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
+from django.conf import settings as django_settings
+from django.core.management import CommandError, call_command
+from django.test import override_settings
 
+from icv_sitemaps.conf import ICV_AUTH_USER_MODEL
 from icv_sitemaps.models import (
     AdsEntry,
     DiscoveryFileConfig,
@@ -149,6 +157,63 @@ class TestDiscoveryFileConfig:
         DiscoveryFileConfig.objects.create(file_type="humans_txt", tenant_id="tenant-a", content="team a")
         DiscoveryFileConfig.objects.create(file_type="humans_txt", tenant_id="tenant-b", content="team b")
         assert DiscoveryFileConfig.objects.count() == 2
+
+    def test_last_modified_by_targets_the_resolved_user_model(self):
+        """ADR-037 rule 3: the FK targets ICV_AUTH_USER_MODEL, not a hardcoded settings.AUTH_USER_MODEL read."""
+        field = DiscoveryFileConfig._meta.get_field("last_modified_by")
+        resolved_label = field.remote_field.model._meta.label
+
+        assert resolved_label == ICV_AUTH_USER_MODEL
+        assert resolved_label == django_settings.AUTH_USER_MODEL
+
+    def test_last_modified_by_follows_icv_auth_user_model_override(self):
+        """ADR-037 rule 3, with teeth: proves the FK follows ICV_AUTH_USER_MODEL
+
+        specifically, not just that it happens to equal AUTH_USER_MODEL when
+        unset (both spellings resolve to the same model in that case, which
+        makes the sibling test above vacuous on its own). Runs in a
+        subprocess because ICV_AUTH_USER_MODEL is read once at import time in
+        icv_sitemaps.conf and baked into the model's deconstructed field; it
+        cannot be patched into an already-loaded model class in this process.
+        """
+        repo_root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import django; django.setup(); "
+                "from icv_sitemaps.models import DiscoveryFileConfig; "
+                "print(DiscoveryFileConfig._meta.get_field('last_modified_by').remote_field.model._meta.label)",
+            ],
+            env={
+                **os.environ,
+                "DJANGO_SETTINGS_MODULE": "settings",
+                "PYTHONPATH": "src:tests",
+                "ICV_SITEMAPS_TEST_AUTH_OVERRIDE": "auth.Group",
+            },
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.stdout.strip() == "auth.Group", "USER FK IGNORES ICV_AUTH_USER_MODEL"
+
+    def test_makemigrations_check_is_clean_with_the_override_unset(self, db):
+        """ADR-037 migration-state consequence: with ICV_AUTH_USER_MODEL unset, the resolved
+
+        FK target equals settings.AUTH_USER_MODEL, so Django deconstructs the field to the
+        swappable SettingsReference and the shipped 0001_initial stays byte-stable: no
+        makemigrations --check drift.
+
+        override_settings(MIGRATION_MODULES={}) clears the wholesale disabling tests/settings.py
+        applies for every app (including contenttypes/auth/admin), which re-enables the loader's
+        view of icv_sitemaps' own shipped migrations for this one check.
+        """
+        with override_settings(MIGRATION_MODULES={}):
+            try:
+                call_command("makemigrations", "icv_sitemaps", "--check", "--dry-run", verbosity=0)
+            except (SystemExit, CommandError) as exc:
+                pytest.fail(f"makemigrations --check reported drift against the shipped migrations: {exc!r}")
 
 
 class TestRedirectRule:
