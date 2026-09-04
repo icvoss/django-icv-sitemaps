@@ -1,9 +1,9 @@
-"""Unit tests for the icv_sitemaps.cache fail-open wrappers (#9)."""
+"""Unit tests for the icv_sitemaps.cache fail-open wrappers (#9, #51/ADR-037)."""
 
 import logging
 from unittest.mock import patch
 
-from django.core.cache import cache
+from django.core.cache import cache, caches
 
 from icv_sitemaps.cache import safe_delete, safe_get, safe_set
 
@@ -61,3 +61,52 @@ class TestSafeDelete:
 
         warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("stale-key" in record.message for record in warning_records)
+
+
+def _configure_two_caches(settings):
+    """Configure a "default" and an "icv" CACHES alias, each its own LocMem instance.
+
+    Django resets the ``caches`` connection handler when ``CACHES`` changes,
+    so setting it via the pytest-django ``settings`` fixture is sufficient.
+    LOCATION must differ between the two: LocMemCache backends sharing a
+    LOCATION share the same underlying store.
+    """
+    settings.CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "icv-sitemaps-test-default",
+        },
+        "icv": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "icv-sitemaps-test-icv",
+        },
+    }
+
+
+class TestCachesAlias:
+    def test_safe_set_writes_to_the_configured_alias_only(self, db, settings):
+        _configure_two_caches(settings)
+
+        with patch("icv_sitemaps.conf.ICV_CACHES_ALIAS", "icv"):
+            safe_set("k", "v", 60)
+
+        assert caches["icv"].get("k") == "v", "CACHE WRITE WENT TO THE DEFAULT ALIAS"
+        assert caches["default"].get("k") is None, "CACHE WRITE WENT TO THE DEFAULT ALIAS"
+
+    def test_safe_get_reads_from_the_configured_alias(self, db, settings):
+        _configure_two_caches(settings)
+        caches["icv"].set("k", "from-icv", 60)
+
+        with patch("icv_sitemaps.conf.ICV_CACHES_ALIAS", "icv"):
+            assert safe_get("k") == "from-icv"
+
+    def test_safe_delete_removes_from_the_configured_alias(self, db, settings):
+        _configure_two_caches(settings)
+        caches["icv"].set("k", "v", 60)
+        caches["default"].set("k", "v", 60)
+
+        with patch("icv_sitemaps.conf.ICV_CACHES_ALIAS", "icv"):
+            safe_delete("k")
+
+        assert caches["icv"].get("k") is None
+        assert caches["default"].get("k") == "v", "DELETE REMOVED FROM THE DEFAULT ALIAS INSTEAD OF THE OVERRIDE"

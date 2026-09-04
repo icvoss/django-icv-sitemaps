@@ -1,11 +1,11 @@
 """Discovery file models: robots.txt rules, ads.txt entries, and freeform config."""
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from icv_sitemaps.conf import ICV_AUTH_USER_MODEL
 from icv_sitemaps.models.base import BaseModel
 from icv_sitemaps.models.choices import (
     DIRECTIVE_CHOICES,
@@ -188,7 +188,7 @@ class DiscoveryFileConfig(BaseModel):
         help_text=_("Whether this file is served when requested."),
     )
     last_modified_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        ICV_AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
