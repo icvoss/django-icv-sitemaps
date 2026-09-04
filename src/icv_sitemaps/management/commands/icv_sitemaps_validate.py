@@ -115,16 +115,17 @@ class Command(BaseCommand):
 
     def _read_file_content(self, sitemap_file, issues: list[str]) -> bytes | None:
         """Read raw file content from storage. Returns None and appends to issues on failure."""
-        from django.core.files.storage import default_storage
+        from icv_sitemaps.storage import get_storage
 
+        storage = get_storage()
         storage_path = sitemap_file.storage_path
 
         try:
-            if not default_storage.exists(storage_path):
+            if not storage.exists(storage_path):
                 issues.append(f"File not found in storage: {storage_path}")
                 return None
 
-            with default_storage.open(storage_path, "rb") as fh:
+            with storage.open(storage_path, "rb") as fh:
                 content = fh.read()
 
             # Handle gzip transparently

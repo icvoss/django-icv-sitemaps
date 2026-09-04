@@ -6,7 +6,31 @@ All settings are namespaced under ICV_SITEMAPS_* and accessed via this module.
 
 from django.conf import settings
 
-# Dotted path to Django storage backend for generated files
+# ---------------------------------------------------------------------------
+# Fleet-global settings (ADR-037: icv packages mirror a Django-native
+# setting with an ICV_-prefixed override rather than inventing a
+# per-package variant). Resolved here, in this package's own conf.py, per
+# the flat-topology rule; no shared import across packages.
+# ---------------------------------------------------------------------------
+
+# Which user model icv-sitemaps' user FKs target. Falls back to Django's
+# own AUTH_USER_MODEL, so a project that configures nothing gets stock
+# Django behaviour.
+ICV_AUTH_USER_MODEL: str = getattr(settings, "ICV_AUTH_USER_MODEL", settings.AUTH_USER_MODEL)
+
+# Which configured STORAGES alias icv-sitemaps writes generated files to
+# and reads them back from. Falls back to "default".
+ICV_STORAGES_ALIAS: str = getattr(settings, "ICV_STORAGES_ALIAS", "default")
+
+# Which configured CACHES alias icv-sitemaps caches through. Falls back to
+# "default".
+ICV_CACHES_ALIAS: str = getattr(settings, "ICV_CACHES_ALIAS", "default")
+
+# Dotted path to Django storage backend for generated files.
+#
+# Deprecated since 3.1.0 in favour of ICV_STORAGES_ALIAS above (ADR-037).
+# Still honoured when set to anything other than the default sentinel
+# below; removed in the next minor release. See icv_sitemaps.checks.W002.
 ICV_SITEMAPS_STORAGE_BACKEND: str = getattr(
     settings, "ICV_SITEMAPS_STORAGE_BACKEND", "django.core.files.storage.default_storage"
 )

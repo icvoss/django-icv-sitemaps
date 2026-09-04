@@ -160,10 +160,11 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
     Returns:
         Number of orphan files deleted.
     """
-    from django.core.files.storage import default_storage
-
     from icv_sitemaps.conf import ICV_SITEMAPS_STORAGE_PATH
     from icv_sitemaps.models.sections import SitemapFile
+    from icv_sitemaps.storage import get_storage
+
+    storage = get_storage()
 
     storage_dir = ICV_SITEMAPS_STORAGE_PATH.rstrip("/")
     scan_prefix = f"{storage_dir}/{tenant_id}/" if tenant_id else f"{storage_dir}/"
@@ -180,7 +181,7 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
     deleted_count = 0
 
     try:
-        _directories, files = default_storage.listdir(scan_prefix)
+        _directories, files = storage.listdir(scan_prefix)
     except Exception:
         logger.exception("cleanup_orphan_files: cannot list storage directory %r.", scan_prefix)
         return 0
@@ -191,7 +192,7 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
         path = f"{scan_prefix}{filename}"
         if path not in known_paths:
             try:
-                default_storage.delete(path)
+                storage.delete(path)
                 deleted_count += 1
                 logger.info("cleanup_orphan_files: deleted orphan file %r.", path)
             except Exception:
@@ -202,7 +203,7 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
         for subdir in _directories:
             sub_prefix = f"{scan_prefix}{subdir}/"
             try:
-                _, sub_files = default_storage.listdir(sub_prefix)
+                _, sub_files = storage.listdir(sub_prefix)
             except Exception:
                 continue
             for filename in sub_files:
@@ -211,7 +212,7 @@ def cleanup_orphan_files(tenant_id: str = "") -> int:
                 path = f"{sub_prefix}{filename}"
                 if path not in known_paths:
                     try:
-                        default_storage.delete(path)
+                        storage.delete(path)
                         deleted_count += 1
                         logger.info("cleanup_orphan_files: deleted orphan file %r.", path)
                     except Exception:

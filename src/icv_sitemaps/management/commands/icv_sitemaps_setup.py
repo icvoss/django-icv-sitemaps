@@ -57,10 +57,11 @@ class Command(BaseCommand):
     def _verify_storage(self, dry_run: bool) -> bool:
         """Test storage write/read/delete to verify connectivity."""
         from django.core.files.base import ContentFile
-        from django.core.files.storage import default_storage
 
         from icv_sitemaps.conf import ICV_SITEMAPS_STORAGE_PATH
+        from icv_sitemaps.storage import get_storage
 
+        storage = get_storage()
         test_path = f"{ICV_SITEMAPS_STORAGE_PATH}_setup_test.txt"
 
         if dry_run:
@@ -69,18 +70,18 @@ class Command(BaseCommand):
 
         try:
             # Write
-            default_storage.save(test_path, ContentFile(b"icv-sitemaps-setup-test"))
+            storage.save(test_path, ContentFile(b"icv-sitemaps-setup-test"))
             self.stdout.write(f"  Write OK: {test_path}")
 
             # Read
-            with default_storage.open(test_path) as fh:
+            with storage.open(test_path) as fh:
                 content = fh.read()
             if content != b"icv-sitemaps-setup-test":
                 raise RuntimeError("Storage read-back content mismatch during verification.")
             self.stdout.write("  Read OK")
 
             # Delete
-            default_storage.delete(test_path)
+            storage.delete(test_path)
             self.stdout.write("  Delete OK")
 
             self.stdout.write(self.style.SUCCESS("  Storage connectivity verified."))

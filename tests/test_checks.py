@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.core.checks.registry import registry
 
 from icv_sitemaps.apps import IcvSitemapsConfig
-from icv_sitemaps.checks import check_base_url_configured
+from icv_sitemaps.checks import check_base_url_configured, check_storage_backend_deprecated
 
 
 class TestCheckBaseUrlConfigured:
@@ -69,3 +69,30 @@ class TestCheckBaseUrlConfigured:
             ids = [message.id for check in registered for message in check(app_configs=None)]
 
         assert "icv_sitemaps.W001" in ids
+
+
+class TestCheckStorageBackendDeprecated:
+    """Tests for icv_sitemaps.W002 (#52, ADR-037), mirroring W001's shape."""
+
+    def test_warns_when_deprecated_setting_is_non_default(self):
+        with patch(
+            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
+            "storages.backends.s3boto3.S3Boto3Storage",
+        ):
+            messages = check_storage_backend_deprecated(None)
+
+        assert len(messages) == 1
+        message = messages[0]
+        assert message.id == "icv_sitemaps.W002"
+        assert message.level == 30  # logging.WARNING; must not be an Error
+        assert "ICV_SITEMAPS_STORAGE_BACKEND" in message.msg
+        assert "ICV_STORAGES_ALIAS" in message.hint
+
+    def test_no_warning_when_setting_is_default(self):
+        with patch(
+            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
+            "django.core.files.storage.default_storage",
+        ):
+            messages = check_storage_backend_deprecated(None)
+
+        assert messages == []

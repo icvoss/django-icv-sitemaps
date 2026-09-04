@@ -51,3 +51,30 @@ def check_base_url_configured(app_configs, **kwargs):
             id="icv_sitemaps.W001",
         )
     ]
+
+
+@register()
+def check_storage_backend_deprecated(app_configs, **kwargs):
+    """Warn when the deprecated ``ICV_SITEMAPS_STORAGE_BACKEND`` is set (ADR-037).
+
+    Read inside the function body (not at module import time), same reason
+    as ``check_base_url_configured`` above.
+    """
+    from icv_sitemaps.conf import ICV_SITEMAPS_STORAGE_BACKEND
+
+    if ICV_SITEMAPS_STORAGE_BACKEND == "django.core.files.storage.default_storage":
+        return []
+
+    return [
+        CheckWarning(
+            "ICV_SITEMAPS_STORAGE_BACKEND is deprecated.",
+            hint=(
+                "Configure a STORAGES alias for icv-sitemaps and point "
+                "ICV_STORAGES_ALIAS at it instead, for example "
+                'ICV_STORAGES_ALIAS = "sitemaps" with a matching entry in '
+                "your STORAGES setting. ICV_SITEMAPS_STORAGE_BACKEND is "
+                "removed in the next minor release."
+            ),
+            id="icv_sitemaps.W002",
+        )
+    ]
