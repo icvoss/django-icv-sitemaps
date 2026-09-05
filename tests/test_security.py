@@ -189,24 +189,27 @@ class TestViewSecurityBoundaries:
         response = client.get("/sitemaps/totally-missing.xml")
         assert response.status_code == 404
 
-    def test_tenant_prefix_func_with_unsafe_chars_falls_back_to_empty(self, db, settings, client, tmp_path):
-        """An unsafe tenant_id returned by TENANT_PREFIX_FUNC is ignored."""
+    def test_tenant_prefix_func_with_unsafe_chars_raises_500(self, db, settings, client, tmp_path):
+        """An unsafe tenant_id returned by TENANT_PREFIX_FUNC fails closed (#56).
+
+        Patches ``icv_sitemaps.conf`` directly (the setting is an import-time
+        constant, see ``tests/test_storage_routing.py``), so the resolver
+        genuinely runs the unsafe callable rather than short-circuiting on
+        an unset setting. Fails against pre-#56 code, which caught the
+        unsafe-value case and returned ``""``, serving the default tenant's
+        robots.txt with a 200.
+        """
+        from unittest.mock import patch
+
+        import icv_sitemaps.conf as conf_mod
+
         settings.MEDIA_ROOT = str(tmp_path)
-        settings.ICV_SITEMAPS_TENANT_PREFIX_FUNC = "tests.helpers_for_tests.unsafe_tenant_func"
+        client.raise_request_exception = False
 
-        # Rather than relying on an external helper module, patch the view helper
-        import icv_sitemaps.views as views_mod
-
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr(
-                views_mod,
-                "_get_tenant_id",
-                lambda request: "",  # Always safe fallback
-            )
+        with patch.object(conf_mod, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "tests.tenant_resolvers.unsafe"):
             response = client.get("/robots.txt")
 
-        # With empty tenant_id the request should succeed normally
-        assert response.status_code == 200
+        assert response.status_code == 500
 
     def test_tenant_id_with_path_traversal_in_storage_path_raises_value_error(self):
         """_storage_path rejects tenant IDs containing unsafe characters."""
@@ -256,26 +259,6 @@ class TestViewSecurityBoundaries:
 
         assert "acme-corp" in path
         assert ".." not in path
-
-    def test_get_tenant_id_with_unsafe_return_value_falls_back_to_empty(self, settings):
-        """_get_tenant_id returns '' when the callable returns an unsafe value."""
-        settings.ICV_SITEMAPS_TENANT_PREFIX_FUNC = "icv_sitemaps.tests.helpers.fake_func"
-
-        from unittest.mock import MagicMock, patch
-
-        import icv_sitemaps.views as views_mod
-
-        mock_request = MagicMock()
-
-        # import_string is imported inline inside _get_tenant_id, so we patch
-        # it via the django.utils.module_loading namespace
-        with patch("django.utils.module_loading.import_string") as mock_import:
-            # Simulate callable returning unsafe string with path traversal
-            mock_import.return_value = lambda req: "tenant/../evil"
-            result = views_mod._get_tenant_id(mock_request)
-
-        # Unsafe value must be rejected — falls back to empty string
-        assert result == ""
 
 
 # ---------------------------------------------------------------------------

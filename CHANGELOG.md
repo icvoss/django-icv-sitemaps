@@ -1,5 +1,31 @@
 # Changelog
 
+## [3.1.1] - 2026-09-05
+
+### Fixed
+
+- **A resolver failure in `ICV_SITEMAPS_TENANT_PREFIX_FUNC` no longer serves
+  the default tenant's files** (#56). Previously, when the configured
+  callable raised an exception, or returned a value that failed the
+  `[\w\-]+` safety check, both the views and `RedirectMiddleware` silently
+  fell back to `tenant_id=""`, the single-tenant bucket. That meant a
+  transient error inside a consumer's resolver served the default tenant's
+  `robots.txt`, `ads.txt`, `app-ads.txt`, `security.txt`, `humans.txt`,
+  `llms.txt`, sitemap index and sitemap shards, with a 200 status and
+  cacheable headers, to whichever host the request arrived on; a redirect
+  rule or 404 record could likewise be evaluated against the wrong tenant.
+  Now, a resolver exception or unsafe return value raises
+  `icv_sitemaps.exceptions.TenantResolutionError`. In views, this propagates
+  as Django's 500, the correct signal for a crawler to retry later rather
+  than conclude the sitemap is gone; nothing is cached on this path. In
+  `RedirectMiddleware`, which never raises to its caller, the failure is
+  caught by the existing pass-through handling around redirect checking and
+  404 recording, so the request reaches the underlying view unmodified
+  instead of being redirected or 404-tracked under the wrong tenant.
+  **Consumer impact**: any resolver that has ever raised or returned an
+  unsafe value now causes affected requests to 500 instead of silently
+  serving the default tenant's content.
+
 ## [3.1.0] - 2026-09-04
 
 ### Fixed

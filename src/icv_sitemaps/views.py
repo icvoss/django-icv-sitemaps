@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 
 from django.http import Http404, HttpResponse, HttpResponsePermanentRedirect
 from django.utils.cache import get_conditional_response, patch_cache_control
@@ -95,33 +94,16 @@ def _finalise_cacheable_response(
 def _get_tenant_id(request) -> str:
     """Return the tenant identifier for this request.
 
-    Calls ``ICV_SITEMAPS_TENANT_PREFIX_FUNC`` (a dotted callable path) when
-    set, passing the request as the only argument.  Falls back to ``""`` for
-    single-tenant sites.
+    Thin wrapper around ``icv_sitemaps.tenancy.resolve_tenant_id()``, kept
+    under this name because tests and the spec refer to it. Raises
+    ``TenantResolutionError`` when ``ICV_SITEMAPS_TENANT_PREFIX_FUNC``
+    raises or returns an unsafe value; callers do not catch this, so it
+    propagates as Django's 500 rather than falling back to the
+    single-tenant (``""``) bucket.
     """
-    from icv_sitemaps.conf import ICV_SITEMAPS_TENANT_PREFIX_FUNC
+    from icv_sitemaps.tenancy import resolve_tenant_id
 
-    if not ICV_SITEMAPS_TENANT_PREFIX_FUNC:
-        return ""
-
-    try:
-        from django.utils.module_loading import import_string
-
-        func = import_string(ICV_SITEMAPS_TENANT_PREFIX_FUNC)
-        result = func(request) or ""
-        if result and not re.fullmatch(r"[\w\-]+", result):
-            logger.warning(
-                "ICV_SITEMAPS_TENANT_PREFIX_FUNC returned unsafe tenant_id %r — ignoring.",
-                result,
-            )
-            return ""
-        return result
-    except Exception:
-        logger.exception(
-            "Error calling ICV_SITEMAPS_TENANT_PREFIX_FUNC %r.",
-            ICV_SITEMAPS_TENANT_PREFIX_FUNC,
-        )
-        return ""
+    return resolve_tenant_id(request)
 
 
 def _validate_filename(filename: str) -> bool:
