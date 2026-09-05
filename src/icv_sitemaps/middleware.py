@@ -194,24 +194,19 @@ class RedirectMiddleware:
             return None
 
     def _get_tenant_id(self, request) -> str:
-        """Resolve tenant ID from the request."""
-        from icv_sitemaps.conf import ICV_SITEMAPS_TENANT_PREFIX_FUNC
+        """Resolve tenant ID from the request.
 
-        if not ICV_SITEMAPS_TENANT_PREFIX_FUNC:
-            return ""
+        Thin wrapper around ``icv_sitemaps.tenancy.resolve_tenant_id()``.
+        Raises ``TenantResolutionError`` when ``ICV_SITEMAPS_TENANT_PREFIX_FUNC``
+        raises or returns an unsafe value, rather than substituting the
+        single-tenant (``""``) bucket. Both callers of this method
+        (``_check_redirect``, ``_maybe_record_404``) already run inside a
+        ``try/except Exception`` that logs and passes the request through,
+        so the middleware's never-raises contract is unaffected: what
+        changes is that a resolver failure no longer evaluates the default
+        tenant's redirect rules, or records a 404, against another
+        tenant's request.
+        """
+        from icv_sitemaps.tenancy import resolve_tenant_id
 
-        try:
-            from django.utils.module_loading import import_string
-
-            func = import_string(ICV_SITEMAPS_TENANT_PREFIX_FUNC)
-            result = func(request) or ""
-            if result and not re.fullmatch(r"[\w\-]+", result):
-                logger.warning(
-                    "RedirectMiddleware: tenant func returned unsafe value %r — ignoring.",
-                    result,
-                )
-                return ""
-            return result
-        except Exception:
-            logger.exception("RedirectMiddleware: tenant resolution failed.")
-            return ""
+        return resolve_tenant_id(request)

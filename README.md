@@ -856,6 +856,12 @@ def get_tenant_id(request):
 ICV_SITEMAPS_TENANT_PREFIX_FUNC = "myapp.tenancy.get_tenant_id"
 ```
 
+The callable must either return a safe tenant identifier (matching
+`[\w\-]+`) or a falsy value for single-tenant use; if it raises, or returns
+anything else, tenant resolution fails closed rather than falling back to
+the single-tenant bucket: views raise `TenantResolutionError` (a 500), and
+`RedirectMiddleware` passes the request through unmodified.
+
 Each tenant gets isolated `robots.txt`, `ads.txt`, sitemaps, and all other
 discovery files. Sitemap files are stored with tenant-prefixed paths
 (e.g. `sitemaps/acme/products-0.xml`).

@@ -363,6 +363,48 @@ class TestRedirectMiddlewareGoneOn404:
         assert RedirectLog.objects.filter(path="/genuinely-missing/").exists()
 
 
+class TestTenantResolutionFailsClosed:
+    """A raising tenant resolver must not evaluate the default tenant's
+    redirect rules or record a 404 against another tenant's request (#56).
+
+    The middleware's never-raises contract is unaffected: ``_check_redirect``
+    and ``_maybe_record_404`` already run inside their own
+    ``try/except Exception`` that logs and passes through, so a
+    ``TenantResolutionError`` raised by the shared resolver reaches those
+    handlers exactly like any other exception did before #56.
+    """
+
+    def test_redirect_rule_for_default_tenant_does_not_fire(self, db, rf, make_middleware):
+        """Fails against pre-#56 code, which resolved the default (``""``)
+        tenant on a raising resolver and matched its redirect rule."""
+        RedirectRuleFactory(source_pattern="/old/", destination="/new/", tenant_id="", status_code=301)
+
+        with patch.object(conf_mod, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "tests.tenant_resolvers.raises"):
+            middleware = make_middleware()
+            request = rf.get("/old/")
+            response = middleware(request)
+
+        # Pass-through response from get_response(), not a 301 to /new/.
+        assert response.status_code == 200
+
+    def test_no_404_recorded_for_default_tenant_when_resolver_raises(self, db, rf, make_middleware):
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "tests.tenant_resolvers.raises"),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_ENABLED", True),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE", 1.0),
+            patch.object(conf_mod, "ICV_SITEMAPS_404_IGNORE_PATTERNS", []),
+        ):
+            middleware = make_middleware(status_code=404)
+            request = rf.get("/not-found/")
+            response = middleware(request)
+
+        assert response.status_code == 404
+
+        from icv_sitemaps.models.redirects import RedirectLog
+
+        assert not RedirectLog.objects.filter(path="/not-found/").exists()
+
+
 class TestGoneResolver:
     """ICV_SITEMAPS_GONE_RESOLVER: consumer hook for gone-resolution (#27).
 
