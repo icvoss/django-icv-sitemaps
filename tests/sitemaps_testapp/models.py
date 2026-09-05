@@ -110,3 +110,15 @@ class NewsItem(SitemapMixin, models.Model):
 
     def get_absolute_url(self) -> str:
         return f"/news/{self.slug}/"
+
+
+class Tenant(models.Model):
+    """Test tenant model, used as an ICV_TENANT_MODEL override target (issue #50)."""
+
+    name = models.CharField(max_length=200)
+
+    class Meta:
+        app_label = "sitemaps_testapp"
+
+    def __str__(self) -> str:
+        return self.name

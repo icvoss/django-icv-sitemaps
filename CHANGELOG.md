@@ -1,5 +1,55 @@
 # Changelog
 
+## [3.2.0] - 2026-09-05
+
+### Added
+
+- **Nullable `tenant_ref` foreign key on the six tenant-keyed models**
+  (`SitemapSection`, `RobotsRule`, `AdsEntry`, `DiscoveryFileConfig`,
+  `RedirectRule`, `RedirectLog`), resolved from the new `ICV_TENANT_MODEL`
+  setting (issue #50). This is the fleet-standard FK shape (ADR-019 section
+  2), the same pattern icv-email and icv-payments already ship: the FK
+  target is read once at class-definition time with an `"auth.Group"`
+  functional floor so migration import never crashes when the setting is
+  unset, and is baked into swappable migration metadata
+  (`migrations.swappable_dependency(ICV_TENANT_MODEL)`).
+  - `tenant_id` (the existing `CharField`) remains the package's scoping
+    key for filters, storage paths and cache keys; nothing changes for a
+    consumer who never sets `tenant_ref`.
+  - The package keeps the two consistent on every `save()`/`clean()`: a
+    blank `tenant_id` with `tenant_ref` set is derived as
+    `str(tenant_ref_id)`; a populated `tenant_id` that disagrees with
+    `tenant_ref` raises `ValidationError` rather than being silently
+    overwritten.
+  - New system checks: `icv_sitemaps.W003` warns while the `auth.Group`
+    floor is active; `icv_sitemaps.E001` errors when the configured
+    `ICV_TENANT_MODEL` cannot resolve to a model.
+  - **Consumer terms**: install this release, run `migrate`, and every
+    consumer gets one new migration adding a single nullable
+    `tenant_ref_id` column to each of the six tables, no data change and
+    no `tenant_id` behaviour change. Setting `ICV_TENANT_MODEL` and
+    populating `tenant_ref` is entirely opt-in.
+
+### Removed
+
+- **`ICV_SITEMAPS_STORAGE_BACKEND`**, deprecated since 3.1.0 (ADR-037). The
+  setting is now ignored: `icv_sitemaps.storage.get_storage()` resolves
+  only `ICV_STORAGES_ALIAS` into the host project's `STORAGES` setting.
+  `icv_sitemaps.W002` (the deprecation warning) is also removed; that check
+  ID is retired and will not be reused. **Consumer impact**: a project that
+  still sets `ICV_SITEMAPS_STORAGE_BACKEND` gets no warning and no effect
+  from it after upgrading; storage now always resolves through
+  `ICV_STORAGES_ALIAS`. Migrate by configuring a `STORAGES` alias and
+  pointing `ICV_STORAGES_ALIAS` at it, for example:
+
+  ```python
+  STORAGES = {
+      "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+      "sitemaps": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+  }
+  ICV_STORAGES_ALIAS = "sitemaps"
+  ```
+
 ## [3.1.1] - 2026-09-05
 
 ### Fixed

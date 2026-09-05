@@ -5,7 +5,8 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from icv_sitemaps.models.base import BaseModel
+from icv_sitemaps.conf import ICV_TENANT_MODEL
+from icv_sitemaps.models.base import BaseModel, sync_tenant_key
 from icv_sitemaps.models.choices import (
     CHANGEFREQ_CHOICES,
     GENERATION_ACTION_CHOICES,
@@ -32,6 +33,15 @@ class SitemapSection(BaseModel):
         blank=True,
         db_index=True,
         help_text=_("Tenant identifier for multi-tenant setups. Leave blank for single-tenant use."),
+    )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
     )
     section_type = models.CharField(
         max_length=10,
@@ -125,6 +135,11 @@ class SitemapSection(BaseModel):
             raise ValidationError({"model_path": _('model_path is required when section_type is "model".')})
         if self.section_type == "static" and self.model_path:
             raise ValidationError({"model_path": _('model_path must be blank when section_type is "static".')})
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)
 
 
 class SitemapFile(BaseModel):

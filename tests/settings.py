@@ -52,3 +52,9 @@ if os.environ.get("ICV_SITEMAPS_TEST_AUTH_OVERRIDE"):
     # Exercised by tests/test_models.py in a subprocess: proves the user FK
     # follows ICV_AUTH_USER_MODEL rather than AUTH_USER_MODEL (ADR-037).
     ICV_AUTH_USER_MODEL = os.environ["ICV_SITEMAPS_TEST_AUTH_OVERRIDE"]
+
+if os.environ.get("ICV_SITEMAPS_TEST_TENANT_OVERRIDE"):
+    # Exercised by tests/test_tenant_fk.py in a subprocess: proves the
+    # tenant_ref FK follows ICV_TENANT_MODEL rather than the auth.Group
+    # floor (issue #50).
+    ICV_TENANT_MODEL = os.environ["ICV_SITEMAPS_TEST_TENANT_OVERRIDE"]

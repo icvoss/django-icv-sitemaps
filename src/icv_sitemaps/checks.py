@@ -19,6 +19,7 @@ source of startup breakage during migrations, fresh installs and
 
 from __future__ import annotations
 
+from django.core.checks import Error as CheckError
 from django.core.checks import Warning as CheckWarning
 from django.core.checks import register
 
@@ -54,27 +55,47 @@ def check_base_url_configured(app_configs, **kwargs):
 
 
 @register()
-def check_storage_backend_deprecated(app_configs, **kwargs):
-    """Warn when the deprecated ``ICV_SITEMAPS_STORAGE_BACKEND`` is set (ADR-037).
+def check_tenant_model(app_configs, **kwargs):
+    """Validate ICV_TENANT_MODEL configuration at Django startup (issue #50).
 
     Read inside the function body (not at module import time), same reason
     as ``check_base_url_configured`` above.
     """
-    from icv_sitemaps.conf import ICV_SITEMAPS_STORAGE_BACKEND
+    from django.apps import apps
+    from django.conf import settings
 
-    if ICV_SITEMAPS_STORAGE_BACKEND == "django.core.files.storage.default_storage":
-        return []
+    from icv_sitemaps import conf
 
-    return [
-        CheckWarning(
-            "ICV_SITEMAPS_STORAGE_BACKEND is deprecated.",
-            hint=(
-                "Configure a STORAGES alias for icv-sitemaps and point "
-                "ICV_STORAGES_ALIAS at it instead, for example "
-                'ICV_STORAGES_ALIAS = "sitemaps" with a matching entry in '
-                "your STORAGES setting. ICV_SITEMAPS_STORAGE_BACKEND is "
-                "removed in the next minor release."
-            ),
-            id="icv_sitemaps.W002",
+    errors = []
+
+    # Warn when the auth.Group floor is active: a host running with
+    # auth.Group as the tenant model has almost certainly not configured
+    # ICV_TENANT_MODEL intentionally. The column still exists and
+    # migrations still apply; this is purely a nudge to configure it
+    # (ADR-019 section 2, mirroring icv_email.checks.W001).
+    if not getattr(settings, "ICV_TENANT_MODEL", None) and conf.ICV_TENANT_MODEL == "auth.Group":
+        errors.append(
+            CheckWarning(
+                "ICV_TENANT_MODEL is using the 'auth.Group' floor default.",
+                hint=(
+                    "Set ICV_TENANT_MODEL in your Django settings to the intended "
+                    "tenant model, e.g. 'icv_identity.Tenant'. auth.Group is kept "
+                    "only so migration import never crashes; it is rarely the "
+                    "correct choice in production."
+                ),
+                id="icv_sitemaps.W003",
+            )
         )
-    ]
+
+    try:
+        apps.get_model(conf.ICV_TENANT_MODEL)
+    except (LookupError, ValueError) as exc:
+        errors.append(
+            CheckError(
+                f"ICV_TENANT_MODEL cannot resolve to a model: {exc}",
+                hint=f"Current value: {conf.ICV_TENANT_MODEL!r}. Use 'app_label.ModelName' format.",
+                id="icv_sitemaps.E001",
+            )
+        )
+
+    return errors

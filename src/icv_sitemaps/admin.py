@@ -120,10 +120,12 @@ class SitemapSectionAdmin(admin.ModelAdmin):
         "url_count",
         "file_count",
         "last_generated_at",
+        "tenant_ref",
     ]
     list_filter = ["section_type", "sitemap_type", "is_active", "is_stale"]
     search_fields = ["name", "model_path"]
     readonly_fields = ["url_count", "file_count", "last_generated_at", "created_at", "updated_at"]
+    raw_id_fields = ["tenant_ref"]
     actions = [mark_stale, regenerate_selected, generate_all, delete_with_files]
     fieldsets = [
         (
@@ -226,11 +228,12 @@ class SitemapGenerationLogAdmin(admin.ModelAdmin):
 
 @admin.register(RobotsRule)
 class RobotsRuleAdmin(admin.ModelAdmin):
-    list_display = ["user_agent", "directive", "path", "order", "is_active", "tenant_id"]
+    list_display = ["user_agent", "directive", "path", "order", "is_active", "tenant_id", "tenant_ref"]
     list_filter = ["user_agent", "directive", "is_active"]
     list_editable = ["directive", "path", "order", "is_active"]
     search_fields = ["user_agent", "path", "comment"]
     ordering = ["tenant_id", "user_agent", "order"]
+    raw_id_fields = ["tenant_ref"]
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +250,13 @@ class AdsEntryAdmin(admin.ModelAdmin):
         "is_app_ads",
         "is_active",
         "tenant_id",
+        "tenant_ref",
     ]
     list_filter = ["relationship", "is_app_ads", "is_active"]
     list_editable = ["is_active"]
     search_fields = ["domain", "publisher_id", "comment"]
     ordering = ["tenant_id", "domain", "publisher_id"]
+    raw_id_fields = ["tenant_ref"]
 
 
 # ---------------------------------------------------------------------------
@@ -261,11 +266,12 @@ class AdsEntryAdmin(admin.ModelAdmin):
 
 @admin.register(DiscoveryFileConfig)
 class DiscoveryFileConfigAdmin(admin.ModelAdmin):
-    list_display = ["file_type", "tenant_id", "is_active", "updated_at"]
+    list_display = ["file_type", "tenant_id", "tenant_ref", "is_active", "updated_at"]
     list_filter = ["file_type", "is_active"]
     readonly_fields = ["created_at", "updated_at"]
     search_fields = ["tenant_id"]
     ordering = ["tenant_id", "file_type"]
+    raw_id_fields = ["tenant_ref"]
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +296,7 @@ class RedirectRuleAdmin(admin.ModelAdmin):
     search_fields = ["source_pattern", "destination", "name", "notes"]
     readonly_fields = ["hit_count", "last_hit_at", "created_at", "updated_at"]
     ordering = ["tenant_id", "priority"]
+    raw_id_fields = ["tenant_ref"]
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +346,7 @@ def create_gone_from_404(modeladmin, request, queryset):
 
 @admin.register(RedirectLog)
 class RedirectLogAdmin(admin.ModelAdmin):
-    list_display = ["path", "hit_count", "first_seen_at", "last_seen_at", "resolved", "tenant_id"]
+    list_display = ["path", "hit_count", "first_seen_at", "last_seen_at", "resolved", "tenant_id", "tenant_ref"]
     list_filter = ["resolved"]
     ordering = ["-hit_count"]
     readonly_fields = [
@@ -353,6 +360,7 @@ class RedirectLogAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     ]
+    raw_id_fields = ["tenant_ref"]
     actions = [create_gone_from_404]
 
     def has_add_permission(self, request) -> bool:
