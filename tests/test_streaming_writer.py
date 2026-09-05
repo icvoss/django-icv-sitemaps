@@ -337,3 +337,80 @@ class TestStreamingBufferedEquivalence:
         # Each pair of corresponding files must parse to the same number of <url>s.
         for s, b in zip(streaming_files, buffered_files, strict=True):
             assert len(list(_parse(s.storage_path))) == len(list(_parse(b.storage_path)))
+
+
+# ---------------------------------------------------------------------------
+# Shard sizing on rendered bytes, not the flat len(loc) + 200 estimate
+#
+# Each entry below carries a 2000-character image caption. Rendered, each
+# entry is 2310 bytes; the old estimate (len(loc) + 200) put it at 234
+# bytes. Header and footer for an image urlset are 205 and 10 bytes. With
+# ICV_SITEMAPS_MAX_FILE_SIZE_BYTES = 5000:
+#
+#   old flat estimate total for 3 entries: 205 + 3 * 234 = 907
+#       907 <= 5000, so the old code fit all three entries in one shard,
+#       whose real on-disk size is 205 + 3 * 2310 + 10 = 7145 bytes,
+#       comfortably over the 5000-byte cap the setting was meant to enforce.
+#   real rendered total for 3 entries in one shard: 7145, which exceeds
+#       5000, so the corrected sizing must split after the second entry:
+#       shard 1 holds 2 entries (205 + 2 * 2310 + 10 = 4835 <= 5000),
+#       shard 2 holds the third (205 + 2310 + 10 = 2525).
+# ---------------------------------------------------------------------------
+
+
+def _make_captioned_images(n: int):
+    from sitemaps_testapp.models import ProductImage
+
+    caption = "x" * 2000
+    for i in range(n):
+        ProductImage.objects.create(
+            title=f"Item {i}",
+            slug=f"item-{i}",
+            image_url=f"https://cdn.example.com/item-{i}.jpg",
+            caption=caption,
+        )
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+class TestShardSizingOnRenderedBytes:
+    def test_splits_on_real_rendered_size_not_flat_estimate(self, db, tmp_path, settings, streaming):
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        _make_captioned_images(3)
+
+        section = SitemapSectionFactory(
+            name="images-sizing",
+            model_path="sitemaps_testapp.ProductImage",
+            sitemap_type="image",
+            is_stale=True,
+        )
+
+        with _apply(
+            {
+                "ICV_SITEMAPS_MAX_FILE_SIZE_BYTES": 6000,
+                "ICV_SITEMAPS_STREAMING_WRITER": streaming,
+            }
+        ):
+            url_count = generate_section(section)
+
+        assert url_count == 3
+
+        files = list(SitemapFile.objects.filter(section=section).order_by("sequence"))
+
+        # The cap sits between what the old flat estimate would compute and
+        # the real size, on BOTH paths. Streaming: after two real entries
+        # (about 4825 bytes written) the old estimate for the third was
+        # about 236 bytes (5061 <= 6000, no split) while its real size is
+        # about 2310 bytes (7145 > 6000, split). Buffered: the old running
+        # total was 3 * 235 (705 <= 6000, no split). Equal-sized entries with
+        # a cap of 5000 made the streaming leg vacuous: the flat estimate
+        # happened to cross 5000 at the same entry as the real size.
+        assert len(files) == 2
+        assert [f.url_count for f in files] == [2, 1]
+
+        for f in files:
+            root = _parse(f.storage_path)
+            assert len(list(root)) == f.url_count
+            # Every shard's uncompressed byte length must respect the cap.
+            raw = _read_xml(f.storage_path)
+            assert len(raw) <= 6000

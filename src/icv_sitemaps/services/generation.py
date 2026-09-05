@@ -140,6 +140,28 @@ def _checksum(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _normalise_alternates(alternates, base_url: str) -> list[dict]:
+    """Normalise a raw alternates list into the shared entry-dict contract.
+
+    *alternates* is whatever ``get_sitemap_alternates()`` returned, or an
+    entry's raw ``"alternates"`` key for a static section: an iterable of
+    dicts each with ``"hreflang"`` and ``"href"``. ``href`` is absolutised
+    the same way ``loc`` is via :func:`_absolute_url`. A dict missing
+    ``"href"`` raises ``KeyError``, matching how a missing image ``"loc"``
+    is treated: this is a caller programming error, not a value to skip.
+    """
+    result: list[dict] = []
+    for alt in alternates:
+        href = alt["href"]
+        result.append(
+            {
+                "hreflang": str(alt["hreflang"]),
+                "href": _absolute_url(href) if base_url else href,
+            }
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Per-entry byte renderers
 #
@@ -155,6 +177,27 @@ def _esc(value) -> str:
     return xml_escape(str(value))
 
 
+def _esc_attr(value) -> str:
+    """XML-escape *value* coerced to str for use inside a double-quoted attribute."""
+    return xml_escape(str(value), {'"': "&quot;"})
+
+
+def _render_alternates(entry: dict) -> list[str]:
+    """Return the ``<xhtml:link rel="alternate" .../>`` lines for *entry*.
+
+    Emitted after ``<priority>`` (or, in the news renderer, which has no
+    ``<priority>`` element, immediately after ``<loc>``) and before any
+    image, video or news extension elements, in every renderer.
+    """
+    parts: list[str] = []
+    for alt in entry.get("alternates") or ():
+        parts.append(
+            f'    <xhtml:link rel="alternate" hreflang="{_esc_attr(alt["hreflang"])}"'
+            f' href="{_esc_attr(alt["href"])}"/>\n'
+        )
+    return parts
+
+
 def _render_standard_url(entry: dict) -> bytes:
     parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
     if entry.get("lastmod"):
@@ -163,6 +206,7 @@ def _render_standard_url(entry: dict) -> bytes:
         parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
     if entry.get("priority") is not None:
         parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    parts.extend(_render_alternates(entry))
     parts.append("  </url>\n")
     return "".join(parts).encode("utf-8")
 
@@ -175,6 +219,7 @@ def _render_image_url(entry: dict) -> bytes:
         parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
     if entry.get("priority") is not None:
         parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    parts.extend(_render_alternates(entry))
     for image in entry.get("images") or ():
         parts.append("    <image:image>\n")
         parts.append(f"      <image:loc>{_esc(image['loc'])}</image:loc>\n")
@@ -199,6 +244,7 @@ def _render_video_url(entry: dict) -> bytes:
         parts.append(f"    <changefreq>{_esc(entry['changefreq'])}</changefreq>\n")
     if entry.get("priority") is not None:
         parts.append(f"    <priority>{entry['priority']}</priority>\n")
+    parts.extend(_render_alternates(entry))
     video = entry.get("video")
     if video:
         parts.append("    <video:video>\n")
@@ -225,6 +271,7 @@ def _render_video_url(entry: dict) -> bytes:
 
 def _render_news_url(entry: dict) -> bytes:
     parts: list[str] = ["  <url>\n", f"    <loc>{_esc(entry['loc'])}</loc>\n"]
+    parts.extend(_render_alternates(entry))
     news = entry.get("news")
     if news:
         parts.append("    <news:news>\n")
@@ -244,21 +291,26 @@ def _render_news_url(entry: dict) -> bytes:
 
 _HEADERS: dict[str, bytes] = {
     "standard": (
-        b'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
     ),
     "image": (
         b'<?xml version="1.0" encoding="UTF-8"?>\n'
         b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:xhtml="http://www.w3.org/1999/xhtml"'
         b' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n'
     ),
     "video": (
         b'<?xml version="1.0" encoding="UTF-8"?>\n'
         b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:xhtml="http://www.w3.org/1999/xhtml"'
         b' xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">\n'
     ),
     "news": (
         b'<?xml version="1.0" encoding="UTF-8"?>\n'
         b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+        b' xmlns:xhtml="http://www.w3.org/1999/xhtml"'
         b' xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">\n'
     ),
 }
@@ -325,19 +377,29 @@ class _StreamingSitemapWriter:
         self._hasher.update(data)
         self.bytes_written += len(data)
 
-    def write_entry(self, entry: dict) -> None:
-        self._write(self._renderer(entry))
+    def render(self, entry: dict) -> bytes:
+        """Return the rendered bytes for *entry* without writing them."""
+        return self._renderer(entry)
+
+    def write_rendered(self, data: bytes) -> None:
+        """Write already-rendered entry bytes and count the entry."""
+        self._write(data)
         self.url_count += 1
 
-    def estimated_size_after(self, entry: dict) -> int:
-        """Estimate uncompressed XML size after appending *entry*.
+    def write_entry(self, entry: dict) -> None:
+        self.write_rendered(self.render(entry))
 
-        Used for the MAX_FILE_SIZE_BYTES check. We compare against the
-        protocol limit (which is uncompressed); ``bytes_written`` here is
-        also uncompressed because it tracks input bytes to the writer
-        (gzip happens on the underlying handle).
+    def would_exceed(self, data: bytes, max_bytes: int) -> bool:
+        """Return True when writing *data* plus the footer would exceed *max_bytes*.
+
+        Compares against the protocol limit (uncompressed); ``bytes_written``
+        here is also uncompressed because it tracks input bytes to the
+        writer (gzip happens on the underlying handle). The header is
+        already counted in ``bytes_written``; the footer is not yet
+        written, so it is added here to guarantee a finalised file never
+        exceeds *max_bytes*.
         """
-        return self.bytes_written + len(entry.get("loc", "")) + 200
+        return self.bytes_written + len(data) + len(_FOOTER) > max_bytes
 
     def finalize(self) -> tuple[str, int, str]:
         """Write footer, close the file, and return (temp_path, size, checksum).
@@ -548,7 +610,9 @@ def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict
     *raw* is whatever the consumer declared in ``settings["urls"]`` or
     returned from ``settings["url_provider"]``: a dict with at least
     ``"loc"`` and, optionally, ``"lastmod"``, ``"changefreq"``, ``"priority"``,
-    and ``"images"``/``"video"``/``"news"`` for the non-standard sitemap types.
+    ``"alternates"``, and ``"images"``/``"video"``/``"news"`` for the
+    non-standard sitemap types. ``"alternates"`` applies to every sitemap
+    type, the same as the model-instance path.
     """
     raw_url = raw["loc"]
     loc = _absolute_url(raw_url) if base_url else raw_url
@@ -561,6 +625,7 @@ def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict
         "lastmod": lastmod,
         "changefreq": raw.get("changefreq", "daily"),
         "priority": raw.get("priority", 0.5),
+        "alternates": _normalise_alternates(raw.get("alternates") or [], base_url),
     }
 
     if sitemap_type == "image":
@@ -612,7 +677,12 @@ def _iter_static_entries(
 
 
 def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
-    """Extract a sitemap entry dict from a model instance."""
+    """Extract a sitemap entry dict from a model instance.
+
+    ``entry["alternates"]`` is read via ``get_sitemap_alternates()`` (default
+    ``[]``) for every ``sitemap_type``, not only ``"standard"``: image, video
+    and news sitemaps accept ``xhtml:link`` alternates the same way.
+    """
     try:
         raw_url = instance.get_sitemap_url()
     except Exception:
@@ -626,6 +696,7 @@ def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
         "lastmod": _format_lastmod(lastmod_val),
         "changefreq": getattr(instance, "get_sitemap_changefreq", lambda: "daily")(),
         "priority": getattr(instance, "get_sitemap_priority", lambda: 0.5)(),
+        "alternates": _normalise_alternates(getattr(instance, "get_sitemap_alternates", list)(), base_url),
     }
 
     if sitemap_type == "image":
@@ -1010,9 +1081,8 @@ def _generate_streaming(
     writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
     try:
         for entry in entries:
-            if writer.url_count >= max_urls or (
-                writer.url_count > 0 and writer.estimated_size_after(entry) > max_bytes
-            ):
+            data = writer.render(entry)
+            if writer.url_count >= max_urls or (writer.url_count > 0 and writer.would_exceed(data, max_bytes)):
                 temp_path, size, checksum = writer.finalize()
                 try:
                     final_path = _publish_shard(
@@ -1038,7 +1108,7 @@ def _generate_streaming(
                 file_sequence += 1
                 writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
 
-            writer.write_entry(entry)
+            writer.write_rendered(data)
 
         # Final shard (only if it has any entries).
         if writer.url_count > 0:
@@ -1107,11 +1177,14 @@ def _generate_buffered(
     *entries* is any iterable of the entry-dict contract; see
     :func:`_generate_streaming` for the same convention.
     """
+    renderer = _renderer_for(sitemap_type)
+    shard_base_size = len(_header_for(sitemap_type)) + len(_FOOTER)
+
     new_files: list[dict] = []
     file_sequence = 0
     total_urls = 0
     current_entries: list[dict] = []
-    current_size = 0
+    current_size = shard_base_size
 
     def _flush() -> None:
         nonlocal total_urls, file_sequence, current_entries, current_size
@@ -1133,14 +1206,14 @@ def _generate_buffered(
         total_urls += len(current_entries)
         file_sequence += 1
         current_entries = []
-        current_size = 0
+        current_size = shard_base_size
 
     for entry in entries:
-        entry_size_estimate = len(entry.get("loc", "")) + 200
-        if current_entries and (len(current_entries) >= max_urls or current_size + entry_size_estimate > max_bytes):
+        entry_size = len(renderer(entry))
+        if current_entries and (len(current_entries) >= max_urls or current_size + entry_size > max_bytes):
             _flush()
         current_entries.append(entry)
-        current_size += entry_size_estimate
+        current_size += entry_size
 
     _flush()
     return total_urls, new_files

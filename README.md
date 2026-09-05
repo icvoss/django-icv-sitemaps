@@ -37,8 +37,11 @@ but **fully standalone**: no other ICV packages required.
   sections as stale; only changed sections are regenerated
 - **All four sitemap types**: standard, image, video, and news sitemaps with
   correct XML namespaces per the sitemap protocol
+- **hreflang alternates**: declare per-page language alternates via
+  `get_sitemap_alternates()`, rendered as `xhtml:link` elements on every
+  sitemap type
 - **Automatic splitting**: files are split at 50,000 URLs or 50 MB per the
-  protocol limits
+  protocol limits, sized on the bytes actually rendered
 - **SitemapMixin**: declare any Django model as sitemap-includable with a small
   set of class attributes
 - **Auto-sections**: `ICV_SITEMAPS_AUTO_SECTIONS` wires signal handlers
@@ -270,6 +273,50 @@ class BreakingStory(SitemapMixin, models.Model):
     sitemap_news_date_field = "published_at"
 ```
 
+### Alternates (hreflang)
+
+Every sitemap type accepts `<xhtml:link rel="alternate" .../>` elements, one
+per language variant of a page. Override `get_sitemap_alternates()` on your
+model to return the full cluster: this page's own language plus every
+alternate, including an `"x-default"` entry where one applies. There is no
+class-attribute field mapping for this, unlike the image, video and news
+fields above: the cluster comes from your project's i18n routing, not a
+model field, so the package has no way to derive it from a single field name.
+
+```python
+class Product(SitemapMixin, models.Model):
+    sitemap_section_name = "products"
+    sitemap_type = "standard"
+
+    def get_sitemap_alternates(self):
+        return [
+            {"hreflang": "en", "href": self.get_absolute_url()},
+            {"hreflang": "de", "href": f"/de{self.get_absolute_url()}"},
+            {"hreflang": "x-default", "href": self.get_absolute_url()},
+        ]
+```
+
+A static section reads the same shape from an `"alternates"` key on each
+entry dict:
+
+```python
+def marketing_urls():
+    return [
+        {
+            "loc": "/pricing/",
+            "alternates": [
+                {"hreflang": "de", "href": "/de/pricing/"},
+                {"hreflang": "x-default", "href": "/pricing/"},
+            ],
+        },
+    ]
+```
+
+Every `<url>` element the package generates, plus every namespace it
+declares, includes `xmlns:xhtml="http://www.w3.org/1999/xhtml"` whether or
+not the section uses alternates: an unused namespace declaration costs
+about 45 bytes and keeps every section's header identical.
+
 ---
 
 ## Static Sections: URLs without a model
@@ -311,7 +358,7 @@ Two ways to declare a static section's URLs, read from the section's
 | `urls` | `list[dict]` | An inline list of entry dicts, for a URL set that doesn't need a callable. |
 
 Each entry dict is the same shape a model section produces internally:
-`{"loc": str, "lastmod": ..., "changefreq": ..., "priority": ..., "images"/"video"/"news": ...}`.
+`{"loc": str, "lastmod": ..., "changefreq": ..., "priority": ..., "alternates": [...], "images"/"video"/"news": ...}`.
 Only `loc` is required.
 
 ```python
@@ -361,6 +408,7 @@ duck-typed `getattr()`, never by checking for the mixin:
 | `get_sitemap_lastmod()` | No | `getattr(instance, ..., lambda: None)()` | `None` (omits `<lastmod>`) |
 | `get_sitemap_changefreq()` | No | `getattr(instance, ..., lambda: "daily")()` | `"daily"` |
 | `get_sitemap_priority()` | No | `getattr(instance, ..., lambda: 0.5)()` | `0.5` |
+| `get_sitemap_alternates()` | No, any `sitemap_type` | `getattr(instance, ..., list)()` | `[]` |
 | `get_sitemap_images()` | Only for `sitemap_type="image"` | `getattr(instance, ..., list)()` | `[]` |
 | `get_sitemap_video()` | Only for `sitemap_type="video"` | `getattr(instance, ..., lambda: None)()` | `None` |
 | `get_sitemap_news()` | Only for `sitemap_type="news"` | `getattr(instance, ..., lambda: None)()` | `None` |

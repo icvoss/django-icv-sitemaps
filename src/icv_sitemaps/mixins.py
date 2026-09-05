@@ -106,6 +106,30 @@ class SitemapMixin:
         """
         return self.sitemap_priority
 
+    def get_sitemap_alternates(self) -> list[dict]:
+        """Return hreflang alternates for this instance's sitemap entry.
+
+        Each dict has two required keys:
+        - ``hreflang``: str, a BCP 47 language code (e.g. ``"de"``,
+          ``"en-GB"``) or the literal ``"x-default"``.
+        - ``href``: str, the alternate's URL, absolute or base-relative
+          (absolutised the same way ``get_sitemap_url()`` is).
+
+        Override to return the full cluster of alternates for this entry,
+        including this instance's own language and an ``"x-default"`` entry
+        where one applies: Google's hreflang sitemap format wants
+        every alternate declared on every member of the cluster, and the
+        package has no way to know a page's language on its own. Applies to
+        every ``sitemap_type``: image, video and news sitemaps accept
+        ``xhtml:link`` alternates the same as standard ones.
+
+        Returns an empty list by default. There is no class-attribute field
+        mapping for alternates (unlike ``sitemap_image_field`` and similar):
+        the cluster comes from your project's i18n routing, not a model
+        field.
+        """
+        return []
+
     def get_sitemap_images(self) -> list[dict]:
         """Return image metadata for image sitemaps.
 
