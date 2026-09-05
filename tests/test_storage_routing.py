@@ -161,3 +161,39 @@ class TestDefaultIsStoragesDefaultAlias:
     def test_get_storage_is_storages_default_with_nothing_configured(self, db):
         assert get_storage() is storages["default"]
         assert isinstance(get_storage(), Storage)
+
+
+class TestRemovedStorageBackendSettingIsIgnored:
+    """Absence guard for the 3.2.0 removal of ``ICV_SITEMAPS_STORAGE_BACKEND``.
+
+    The setting was deprecated in 3.1.0 and removed one minor later (ADR-037
+    rule 4). Both halves of the removal are asserted: the conf module no
+    longer exposes the name, and a host project that still sets it to a real
+    ``Storage`` subclass gets the alias-resolved backend, not that class.
+    The second assertion is the one with teeth: reintroducing a
+    ``getattr(settings, "ICV_SITEMAPS_STORAGE_BACKEND", ...)`` branch in
+    ``get_storage()`` would return the marker class below.
+    """
+
+    def test_conf_no_longer_exposes_the_name(self):
+        import icv_sitemaps.conf as conf_mod
+
+        assert not hasattr(conf_mod, "ICV_SITEMAPS_STORAGE_BACKEND")
+
+    def test_setting_it_does_not_change_the_resolved_backend(self, db, settings):
+        settings.ICV_SITEMAPS_STORAGE_BACKEND = "tests.test_storage_routing.MarkerStorage"
+
+        resolved = get_storage()
+
+        assert not isinstance(resolved, MarkerStorage)
+        assert type(resolved) is type(storages["default"])
+
+
+class MarkerStorage(Storage):
+    """A distinguishable Storage subclass the removed setting could point at."""
+
+    def _open(self, name, mode="rb"):  # pragma: no cover - never called
+        raise NotImplementedError
+
+    def _save(self, name, content):  # pragma: no cover - never called
+        raise NotImplementedError
