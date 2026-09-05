@@ -4,7 +4,8 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from icv_sitemaps.models.base import BaseModel
+from icv_sitemaps.conf import ICV_TENANT_MODEL
+from icv_sitemaps.models.base import BaseModel, sync_tenant_key
 from icv_sitemaps.models.choices import (
     REDIRECT_MATCH_TYPE_CHOICES,
     REDIRECT_SOURCE_CHOICES,
@@ -119,6 +120,15 @@ class RedirectRule(BaseModel):
         verbose_name=_("tenant ID"),
         help_text=_("Tenant identifier. Leave blank for single-tenant use."),
     )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
+    )
     notes = models.TextField(
         blank=True,
         default="",
@@ -151,6 +161,14 @@ class RedirectRule(BaseModel):
         dest = self.destination or "410 Gone"
         return f"{self.source_pattern} \u2192 {dest} ({self.status_code})"
 
+    def clean(self) -> None:
+        super().clean()
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)
+
 
 # ------------------------------------------------------------------
 # RedirectLog
@@ -177,6 +195,15 @@ class RedirectLog(BaseModel):
         db_index=True,
         verbose_name=_("tenant ID"),
         help_text=_("Tenant identifier. Leave blank for single-tenant use."),
+    )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
     )
     hit_count = models.PositiveIntegerField(
         default=1,
@@ -220,3 +247,11 @@ class RedirectLog(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.path} ({self.hit_count} hits)"
+
+    def clean(self) -> None:
+        super().clean()
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)

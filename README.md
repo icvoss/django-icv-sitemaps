@@ -713,7 +713,7 @@ sensible default so the package works out of the box for local development.
 | `ICV_STORAGES_ALIAS` | `str` | `"default"` | Which alias in your `STORAGES` setting icv-sitemaps writes generated files to and reads them back from. Fleet-wide convention (ADR-037); falls back to Django's own `storages["default"]` |
 | `ICV_CACHES_ALIAS` | `str` | `"default"` | Which alias in your `CACHES` setting icv-sitemaps caches through. Fleet-wide convention (ADR-037); falls back to Django's own `caches["default"]` |
 | `ICV_AUTH_USER_MODEL` | `str` | `settings.AUTH_USER_MODEL` | Which user model icv-sitemaps' `last_modified_by` FK targets. Fleet-wide convention (ADR-037); a project that configures nothing gets `AUTH_USER_MODEL` |
-| `ICV_SITEMAPS_STORAGE_BACKEND` | `str` | `"django.core.files.storage.default_storage"` | **Deprecated**, use `ICV_STORAGES_ALIAS` instead. Dotted path to a Django storage backend for generated files; still honoured when set, removed in the next minor release (see `icv_sitemaps.W002`) |
+| `ICV_TENANT_MODEL` | `str` | `"auth.Group"` | Which tenant model every `tenant_ref` FK targets (issue #50). The single ecosystem knob (ADR-025 T2, ADR-037); `"auth.Group"` is a functional floor so migration import never crashes when unset, and `icv_sitemaps.W003` warns while it is active. Set it once, before first migrate; see "Multi-Tenancy" below |
 | `ICV_SITEMAPS_STORAGE_PATH` | `str` | `"sitemaps/"` | Base path within the storage backend |
 | `ICV_SITEMAPS_MAX_URLS_PER_FILE` | `int` | `50000` | Maximum URLs per file (protocol limit: 50,000) |
 | `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` | `int` | `52428800` | Maximum file size in bytes (protocol limit: 50 MB) |
@@ -865,6 +865,49 @@ the single-tenant bucket: views raise `TenantResolutionError` (a 500), and
 Each tenant gets isolated `robots.txt`, `ads.txt`, sitemaps, and all other
 discovery files. Sitemap files are stored with tenant-prefixed paths
 (e.g. `sitemaps/acme/products-0.xml`).
+
+### Tenant foreign key (issue #50)
+
+The six tenant-keyed models (`SitemapSection`, `RobotsRule`, `AdsEntry`,
+`DiscoveryFileConfig`, `RedirectRule`, `RedirectLog`) also carry a nullable
+`tenant_ref` foreign key, resolved from `ICV_TENANT_MODEL` (default
+`"auth.Group"`, a functional floor so migration import never crashes when
+unset). This is a fleet-standard shape (ADR-019 section 2), not this
+package implementing tenancy: `tenant_id` remains the scoping key every
+filter, storage path, and cache key uses; `tenant_ref` adds referential
+integrity and a column a `django-boundary` RLS policy can key on.
+
+The two are kept consistent by the package itself. On `clean()` and `save()`
+of any of the six models:
+
+- If `tenant_ref` is unset, nothing changes.
+- If `tenant_ref` is set and `tenant_id` is blank, `tenant_id` is derived as
+  `str(tenant_ref_id)`.
+- If `tenant_ref` is set and `tenant_id` already holds a different value,
+  `save()`/`clean()` raises `ValidationError` rather than silently
+  overwriting it.
+
+A consumer's tenant resolver should return `str(request.tenant.pk)`, so the
+derived `tenant_id` always agrees with the FK. A consumer wiring
+`django-boundary` row-level security on one of these tables passes the FK's
+column explicitly, since it is not named `tenant_id`:
+
+```python
+from boundary.migrations_ops import CreateTenantPolicy
+
+CreateTenantPolicy("sitemapsection", tenant_column="tenant_ref_id")
+```
+
+Set `ICV_TENANT_MODEL` once, before the first `migrate`, and leave it
+unchanged thereafter (it is baked into swappable migration metadata, the
+`get_user_model()` pattern). `icv_sitemaps.W003` warns at `manage.py check`
+time while the `auth.Group` floor is active; `icv_sitemaps.E001` errors if
+the configured value cannot resolve to a model.
+
+```python
+# settings.py
+ICV_TENANT_MODEL = "myapp.Tenant"
+```
 
 ---
 

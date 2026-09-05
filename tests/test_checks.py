@@ -1,4 +1,4 @@
-"""Tests for the icv_sitemaps.W001 system check (#34).
+"""Tests for icv_sitemaps system checks (#34, #50).
 
 ``ICV_SITEMAPS_BASE_URL`` is read inside the check function body, not at
 module import time, so it responds to
@@ -10,10 +10,11 @@ silent no-op for this setting: see conf.py's module-level constant pattern.
 import inspect
 from unittest.mock import patch
 
+from django.conf import settings as django_settings
 from django.core.checks.registry import registry
 
 from icv_sitemaps.apps import IcvSitemapsConfig
-from icv_sitemaps.checks import check_base_url_configured, check_storage_backend_deprecated
+from icv_sitemaps.checks import check_base_url_configured, check_tenant_model
 
 
 class TestCheckBaseUrlConfigured:
@@ -71,28 +72,60 @@ class TestCheckBaseUrlConfigured:
         assert "icv_sitemaps.W001" in ids
 
 
-class TestCheckStorageBackendDeprecated:
-    """Tests for icv_sitemaps.W002 (#52, ADR-037), mirroring W001's shape."""
+class TestCheckTenantModel:
+    """Tests for icv_sitemaps.W003 and icv_sitemaps.E001 (issue #50).
 
-    def test_warns_when_deprecated_setting_is_non_default(self):
-        with patch(
-            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
-            "storages.backends.s3boto3.S3Boto3Storage",
-        ):
-            messages = check_storage_backend_deprecated(None)
+    Mirrors icv_email.checks' equivalent W001/E001 pair. ``conf`` is read
+    inside the check function body, so both ``icv_sitemaps.conf.ICV_TENANT_MODEL``
+    (the module-level constant used for the floor comparison) and
+    ``django.conf.settings.ICV_TENANT_MODEL`` (the raw project setting, used
+    to decide whether the floor is "active" vs. "explicitly chosen") are
+    exercised directly, matching how the check itself reads them.
+    """
 
-        assert len(messages) == 1
-        message = messages[0]
-        assert message.id == "icv_sitemaps.W002"
+    def test_warns_when_floor_is_active_and_settings_has_no_override(self):
+        """The test settings module never sets ICV_TENANT_MODEL, so no explicit
+        removal is needed; only the module-level conf constant is patched."""
+        assert not hasattr(django_settings, "ICV_TENANT_MODEL")
+
+        with patch("icv_sitemaps.conf.ICV_TENANT_MODEL", "auth.Group"):
+            messages = check_tenant_model(None)
+
+        warning_ids = [m.id for m in messages]
+        assert "icv_sitemaps.W003" in warning_ids
+        message = next(m for m in messages if m.id == "icv_sitemaps.W003")
         assert message.level == 30  # logging.WARNING; must not be an Error
-        assert "ICV_SITEMAPS_STORAGE_BACKEND" in message.msg
-        assert "ICV_STORAGES_ALIAS" in message.hint
+        assert "ICV_TENANT_MODEL" in message.msg
+        assert "auth.Group" in message.hint
 
-    def test_no_warning_when_setting_is_default(self):
-        with patch(
-            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
-            "django.core.files.storage.default_storage",
+    def test_no_warning_when_settings_explicitly_chooses_the_floor_value(self):
+        with (
+            patch("icv_sitemaps.conf.ICV_TENANT_MODEL", "auth.Group"),
+            patch.object(django_settings, "ICV_TENANT_MODEL", "auth.Group", create=True),
         ):
-            messages = check_storage_backend_deprecated(None)
+            messages = check_tenant_model(None)
+
+        warning_ids = [m.id for m in messages]
+        assert "icv_sitemaps.W003" not in warning_ids
+
+    def test_no_warning_when_a_real_tenant_model_is_configured(self):
+        with (
+            patch("icv_sitemaps.conf.ICV_TENANT_MODEL", "sitemaps_testapp.Tenant"),
+            patch.object(django_settings, "ICV_TENANT_MODEL", "sitemaps_testapp.Tenant", create=True),
+        ):
+            messages = check_tenant_model(None)
 
         assert messages == []
+
+    def test_errors_when_tenant_model_cannot_resolve(self):
+        with patch("icv_sitemaps.conf.ICV_TENANT_MODEL", "nonexistent.Model"):
+            messages = check_tenant_model(None)
+
+        error_ids = [m.id for m in messages]
+        assert "icv_sitemaps.E001" in error_ids
+        message = next(m for m in messages if m.id == "icv_sitemaps.E001")
+        assert message.level == 40  # logging.ERROR
+        assert "nonexistent.Model" in message.hint
+
+    def test_check_is_registered(self):
+        assert check_tenant_model in registry.registered_checks

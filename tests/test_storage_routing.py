@@ -12,21 +12,14 @@ from contextlib import ExitStack
 from io import StringIO
 from unittest.mock import patch
 
-import pytest
-from django.core.exceptions import ImproperlyConfigured
 from django.core.files.base import ContentFile
 from django.core.files.storage import Storage, storages
-from django.core.files.storage.memory import InMemoryStorage
 from django.core.management import call_command
 
 from icv_sitemaps.services import generate_section
 from icv_sitemaps.storage import get_storage
 from icv_sitemaps.tasks import cleanup_orphan_files
 from icv_sitemaps.testing.factories import StaticSitemapSectionFactory
-
-
-class DummyMemoryStorage(InMemoryStorage):
-    """A concrete Storage subclass reachable by dotted path for legacy-override tests."""
 
 
 def _configure_two_aliases(settings, tmp_path):
@@ -162,43 +155,6 @@ class TestSetupCommandFollowsTheAlias:
         # matters is that the default alias's directory was never created at
         # all, since the command never touched it.
         assert not (tmp_path / "default").exists(), "SETUP COMMAND WROTE THROUGH THE DEFAULT ALIAS, NOT THE OVERRIDE"
-
-
-class TestDeprecatedOverrideStillHonoured:
-    def test_get_storage_returns_the_legacy_backend(self, db):
-        with patch(
-            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
-            "tests.test_storage_routing.DummyMemoryStorage",
-        ):
-            storage = get_storage()
-
-        assert isinstance(storage, DummyMemoryStorage)
-
-    def test_generation_service_delegate_returns_the_same_class(self, db):
-        from icv_sitemaps.services.generation import _get_storage
-
-        with patch(
-            "icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND",
-            "tests.test_storage_routing.DummyMemoryStorage",
-        ):
-            storage = _get_storage()
-
-        assert isinstance(storage, DummyMemoryStorage)
-
-    def test_non_storage_dotted_path_raises_improperly_configured(self, db):
-        """A dotted path that resolves to a callable which is NOT a Storage subclass.
-
-        Must be import_string-able and callable with no args, so the failure
-        is attributable to the isinstance/issubclass guard specifically,
-        never to the target being uncallable (e.g. a plain string constant,
-        which raises TypeError before the guard is ever reached and would
-        make this test pass for the wrong reason under a guard removal).
-        """
-        with (
-            patch("icv_sitemaps.conf.ICV_SITEMAPS_STORAGE_BACKEND", "builtins.dict"),
-            pytest.raises(ImproperlyConfigured),
-        ):
-            get_storage()
 
 
 class TestDefaultIsStoragesDefaultAlias:

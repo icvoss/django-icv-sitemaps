@@ -5,8 +5,8 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-from icv_sitemaps.conf import ICV_AUTH_USER_MODEL
-from icv_sitemaps.models.base import BaseModel
+from icv_sitemaps.conf import ICV_AUTH_USER_MODEL, ICV_TENANT_MODEL
+from icv_sitemaps.models.base import BaseModel, sync_tenant_key
 from icv_sitemaps.models.choices import (
     DIRECTIVE_CHOICES,
     FILE_TYPE_CHOICES,
@@ -38,6 +38,15 @@ class RobotsRule(BaseModel):
         blank=True,
         db_index=True,
         help_text=_("Tenant identifier. Leave blank for single-tenant use."),
+    )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
     )
     user_agent = models.CharField(
         max_length=200,
@@ -88,6 +97,14 @@ class RobotsRule(BaseModel):
     def __str__(self) -> str:
         return f"{self.user_agent}: {self.directive} {self.path}"
 
+    def clean(self) -> None:
+        super().clean()
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)
+
 
 class AdsEntry(BaseModel):
     """Authorised digital advertising seller declaration for ads.txt / app-ads.txt.
@@ -102,6 +119,15 @@ class AdsEntry(BaseModel):
         blank=True,
         db_index=True,
         help_text=_("Tenant identifier. Leave blank for single-tenant use."),
+    )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
     )
     domain = models.CharField(
         max_length=200,
@@ -158,6 +184,11 @@ class AdsEntry(BaseModel):
             value = getattr(self, field_name) or ""
             if "\n" in value or "\r" in value:
                 raise ValidationError({field_name: _("This field must not contain newline characters.")})
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)
 
 
 class DiscoveryFileConfig(BaseModel):
@@ -174,6 +205,15 @@ class DiscoveryFileConfig(BaseModel):
         blank=True,
         db_index=True,
         help_text=_("Tenant identifier. Leave blank for single-tenant use."),
+    )
+    tenant_ref = models.ForeignKey(
+        ICV_TENANT_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="%(app_label)s_%(class)s_set",
+        verbose_name=_("tenant"),
+        help_text=_("Tenant this row belongs to. Optional; when set, tenant_id is derived from it."),
     )
     file_type = models.CharField(
         max_length=20,
@@ -209,3 +249,11 @@ class DiscoveryFileConfig(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.get_file_type_display()} ({self.tenant_id or 'default'})"
+
+    def clean(self) -> None:
+        super().clean()
+        sync_tenant_key(self)
+
+    def save(self, *args, **kwargs):
+        sync_tenant_key(self)
+        super().save(*args, **kwargs)

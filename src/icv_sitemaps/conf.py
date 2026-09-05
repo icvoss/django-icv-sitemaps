@@ -18,6 +18,17 @@ from django.conf import settings
 # Django behaviour.
 ICV_AUTH_USER_MODEL: str = getattr(settings, "ICV_AUTH_USER_MODEL", settings.AUTH_USER_MODEL)
 
+# Identifies the tenant model every ``tenant_ref`` FK in this package
+# targets (issue #50). Never hardcoded or imported by this package: it is
+# the single ecosystem knob (ADR-025 T2, ADR-037), resolved at
+# class-definition time per ADR-019 section 2's fall-through-floor pattern.
+# This package bakes ICV_TENANT_MODEL into swappable migration metadata
+# (the FK target must resolve at migration-generation time), so it needs a
+# functional floor so migration import never crashes when unset, mirroring
+# icv-email and icv-payments' precedent. checks.py emits a warning-level
+# system check (icv_sitemaps.W003) when the floor is active.
+ICV_TENANT_MODEL: str = getattr(settings, "ICV_TENANT_MODEL", "auth.Group")
+
 # Which configured STORAGES alias icv-sitemaps writes generated files to
 # and reads them back from. Falls back to "default".
 ICV_STORAGES_ALIAS: str = getattr(settings, "ICV_STORAGES_ALIAS", "default")
@@ -25,15 +36,6 @@ ICV_STORAGES_ALIAS: str = getattr(settings, "ICV_STORAGES_ALIAS", "default")
 # Which configured CACHES alias icv-sitemaps caches through. Falls back to
 # "default".
 ICV_CACHES_ALIAS: str = getattr(settings, "ICV_CACHES_ALIAS", "default")
-
-# Dotted path to Django storage backend for generated files.
-#
-# Deprecated since 3.1.0 in favour of ICV_STORAGES_ALIAS above (ADR-037).
-# Still honoured when set to anything other than the default sentinel
-# below; removed in the next minor release. See icv_sitemaps.checks.W002.
-ICV_SITEMAPS_STORAGE_BACKEND: str = getattr(
-    settings, "ICV_SITEMAPS_STORAGE_BACKEND", "django.core.files.storage.default_storage"
-)
 
 # Base path within the storage backend for sitemap files
 ICV_SITEMAPS_STORAGE_PATH: str = getattr(settings, "ICV_SITEMAPS_STORAGE_PATH", "sitemaps/")
