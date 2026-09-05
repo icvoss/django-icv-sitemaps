@@ -41,9 +41,11 @@ class TestResolveTenantId:
             resolve_tenant_id(request_obj)
 
     def test_callable_that_raises_propagates_as_tenant_resolution_error(self, request_obj):
-        with patch.object(conf_mod, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "tests.tenant_resolvers.raises"):
-            with pytest.raises(TenantResolutionError) as exc_info:
-                resolve_tenant_id(request_obj)
+        with (
+            patch.object(conf_mod, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "tests.tenant_resolvers.raises"),
+            pytest.raises(TenantResolutionError) as exc_info,
+        ):
+            resolve_tenant_id(request_obj)
 
         assert isinstance(exc_info.value.__cause__, RuntimeError)
         assert str(exc_info.value.__cause__) == "boom"
