@@ -117,7 +117,7 @@ class SitemapMixin:
 
         Override to return the full cluster of alternates for this entry,
         including this instance's own language and an ``"x-default"`` entry
-        where one applies: the sitemaps.org ``xhtml:link`` convention wants
+        where one applies: Google's hreflang sitemap format wants
         every alternate declared on every member of the cluster, and the
         package has no way to know a page's language on its own. Applies to
         every ``sitemap_type``: image, video and news sitemaps accept
