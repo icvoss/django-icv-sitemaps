@@ -69,7 +69,7 @@ class TestTenantModelOverride:
 
     def test_tenant_ref_follows_the_override(self):
         result = self._run_field_target_probe("SitemapSection")
-        assert result.stdout.strip() == "sitemaps_testapp.tenant", (
+        assert result.stdout.strip() == "sitemaps_testapp.Tenant", (
             f"TENANT_REF FK IGNORES ICV_TENANT_MODEL: stderr={result.stderr!r}"
         )
 
