@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **hreflang alternates on every sitemap type** (issue #35). A model can now
+  override `get_sitemap_alternates()` on `SitemapMixin` (default `[]`) to
+  return the full cluster of language alternates for a page, including the
+  page's own language and an `x-default` entry where one applies; a static
+  section reads the same shape from an `"alternates"` key on each entry
+  dict. Alternates render as `<xhtml:link rel="alternate" hreflang=".."
+  href=".."/>` elements, one per alternate, after `<priority>` and before
+  any image, video or news extension elements, in all four sitemap types
+  (standard, image, video, news): Google accepts `xhtml:link` alternates in
+  any urlset. Every generated `<urlset>` now declares
+  `xmlns:xhtml="http://www.w3.org/1999/xhtml"` unconditionally, whether or
+  not a section uses alternates. There is no class-attribute field mapping
+  for alternates: the cluster comes from a project's i18n routing, not a
+  model field.
+
+### Fixed
+
+- **Sitemap shards are sized on the bytes actually written, not a flat
+  estimate.** Both the streaming and buffered generation paths previously
+  estimated each entry's contribution to a shard as `len(loc) + 200`
+  bytes, which already undercounted image and video entries and would have
+  undercounted alternates further. A section whose entries carry large
+  image captions, video metadata, or several alternates could produce a
+  shard that exceeded `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` once actually
+  rendered. Sizing now uses the renderer's real output, so a finalised
+  shard can no longer exceed the configured cap; a file near the cap may
+  now split one entry earlier than before, but never over it.
+
 ## [3.2.0] - 2026-09-05
 
 ### Added
