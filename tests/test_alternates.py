@@ -79,7 +79,7 @@ class TestModelProvidedAlternates:
         settings.MEDIA_ROOT = str(tmp_path)
         from sitemaps_testapp.models import Article
 
-        article = Article.objects.create(title="Bonjour", slug="bonjour")
+        Article.objects.create(title="Bonjour", slug="bonjour")
 
         monkeypatch.setattr(
             Article,
@@ -104,7 +104,7 @@ class TestModelProvidedAlternates:
         sitemap_file = SitemapFile.objects.get(section=section)
         xml = _read_storage_file(sitemap_file.storage_path)
 
-        assert xml.count("<xhtml:link rel=\"alternate\"") == 2
+        assert xml.count('<xhtml:link rel="alternate"') == 2
         assert 'hreflang="fr" href="https://example.com/fr/bonjour/"' in xml
         assert 'hreflang="x-default" href="https://example.com/bonjour/"' in xml
         assert xml.count('xmlns:xhtml="http://www.w3.org/1999/xhtml"') == 1
@@ -178,7 +178,7 @@ class TestAlternatesBeforeExtensionBlocks:
         sitemap_file = SitemapFile.objects.get(section=section)
         xml = _read_storage_file(sitemap_file.storage_path)
 
-        assert xml.count("<xhtml:link rel=\"alternate\"") == 1
+        assert xml.count('<xhtml:link rel="alternate"') == 1
         assert 'hreflang="de" href="https://example.com/de/pricing/"' in xml
 
 

@@ -1082,9 +1082,7 @@ def _generate_streaming(
     try:
         for entry in entries:
             data = writer.render(entry)
-            if writer.url_count >= max_urls or (
-                writer.url_count > 0 and writer.would_exceed(data, max_bytes)
-            ):
+            if writer.url_count >= max_urls or (writer.url_count > 0 and writer.would_exceed(data, max_bytes)):
                 temp_path, size, checksum = writer.finalize()
                 try:
                     final_path = _publish_shard(

@@ -387,7 +387,7 @@ class TestShardSizingOnRenderedBytes:
 
         with _apply(
             {
-                "ICV_SITEMAPS_MAX_FILE_SIZE_BYTES": 5000,
+                "ICV_SITEMAPS_MAX_FILE_SIZE_BYTES": 6000,
                 "ICV_SITEMAPS_STREAMING_WRITER": streaming,
             }
         ):
@@ -397,10 +397,14 @@ class TestShardSizingOnRenderedBytes:
 
         files = list(SitemapFile.objects.filter(section=section).order_by("sequence"))
 
-        # Under the old flat estimate (header + 3 * 235 = 910 <= 5000) all
-        # three entries fit in a single shard; this fails behaviourally
-        # under a reverted estimate because that single shard's real bytes
-        # (7028) exceed max_bytes below.
+        # The cap sits between what the old flat estimate would compute and
+        # the real size, on BOTH paths. Streaming: after two real entries
+        # (about 4825 bytes written) the old estimate for the third was
+        # about 236 bytes (5061 <= 6000, no split) while its real size is
+        # about 2310 bytes (7145 > 6000, split). Buffered: the old running
+        # total was 3 * 235 (705 <= 6000, no split). Equal-sized entries with
+        # a cap of 5000 made the streaming leg vacuous: the flat estimate
+        # happened to cross 5000 at the same entry as the real size.
         assert len(files) == 2
         assert [f.url_count for f in files] == [2, 1]
 
@@ -409,5 +413,4 @@ class TestShardSizingOnRenderedBytes:
             assert len(list(root)) == f.url_count
             # Every shard's uncompressed byte length must respect the cap.
             raw = _read_xml(f.storage_path)
-            assert len(raw) <= 5000
-
+            assert len(raw) <= 6000
