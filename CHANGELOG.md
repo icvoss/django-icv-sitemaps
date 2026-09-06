@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.4.0] - 2026-09-06
+
+### Added
+
+- **Per-section generation-limit overrides** (issue #61 part 2).
+  `SitemapSection.settings` now accepts `max_urls_per_file`,
+  `max_file_size_bytes` and `gzip` keys, each overriding the matching
+  `ICV_SITEMAPS_*` setting for that section only; a section without the
+  key still falls back to the setting as before. `create_section()`
+  gained matching `max_urls_per_file`, `max_file_size_bytes` and `gzip`
+  keyword arguments that store the override in `settings`; an
+  out-of-bounds value raises `ValueError` immediately rather than being
+  persisted. An invalid stored override (wrong type, or outside the
+  sitemap protocol's bounds: 1-50000 URLs per file, 1-52428800 bytes per
+  file) is rejected by the admin via `SitemapSection.clean()`, and fails
+  that section's generation run with a `SitemapGenerationLog` recorded as
+  `failed` rather than raising, the same way an unresolvable
+  `model_path` is handled today.
+- One migration, `0010_sitemapsection_settings_help_text`, updates the admin help text on `SitemapSection.settings` to name the new keys. It changes no column and no data.
+
 ## [3.3.1] - 2026-09-06
 
 ### Fixed

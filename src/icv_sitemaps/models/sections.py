@@ -15,6 +15,18 @@ from icv_sitemaps.models.choices import (
     SITEMAP_TYPE_CHOICES,
 )
 
+# Bounds for the per-section generation-limit overrides read from
+# ``SitemapSection.settings`` (issue #61 part 2). Shared between
+# ``SitemapSection.clean()`` (admin-time validation) and
+# ``services.generation._section_limits()`` (generation-time validation),
+# so the two never drift: the protocol caps are BR-GEN-001 (max URLs per
+# file, sitemaps.org's 50,000-entry limit) and BR-GEN-002 (max file size,
+# sitemaps.org's 50 MiB limit).
+SECTION_LIMIT_BOUNDS: dict[str, tuple[int, int]] = {
+    "max_urls_per_file": (1, 50000),
+    "max_file_size_bytes": (1, 52428800),
+}
+
 
 class SitemapSection(BaseModel):
     """Logical section of the sitemap (e.g. "products", "articles").
@@ -105,7 +117,12 @@ class SitemapSection(BaseModel):
     settings = models.JSONField(
         default=dict,
         blank=True,
-        help_text=_("Section-specific configuration overrides (JSON)."),
+        help_text=_(
+            "Section-specific configuration overrides (JSON). Static sections read "
+            '"url_provider" and "urls"; every section type may override generation '
+            'limits with "max_urls_per_file", "max_file_size_bytes" and "gzip", '
+            "falling back to the matching ICV_SITEMAPS_* setting when absent."
+        ),
     )
 
     class Meta:
@@ -135,7 +152,36 @@ class SitemapSection(BaseModel):
             raise ValidationError({"model_path": _('model_path is required when section_type is "model".')})
         if self.section_type == "static" and self.model_path:
             raise ValidationError({"model_path": _('model_path must be blank when section_type is "static".')})
+        self._clean_limit_overrides()
         sync_tenant_key(self)
+
+    def _clean_limit_overrides(self) -> None:
+        """Validate the optional generation-limit overrides in ``settings``.
+
+        Mirrors ``services.generation._section_limits()`` bounds so the
+        admin rejects a bad override before generation would (issue #61
+        part 2). Raises ``ValidationError`` keyed on ``"settings"``.
+        """
+        section_settings = self.settings or {}
+        for key, (minimum, maximum) in SECTION_LIMIT_BOUNDS.items():
+            if key not in section_settings:
+                continue
+            value = section_settings[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not (minimum <= value <= maximum):
+                raise ValidationError(
+                    {
+                        "settings": _(
+                            'settings["%(key)s"] must be an integer between %(minimum)s and %(maximum)s '
+                            "(got %(value)r)."
+                        )
+                        % {"key": key, "minimum": minimum, "maximum": maximum, "value": value}
+                    }
+                )
+        if "gzip" in section_settings and not isinstance(section_settings["gzip"], bool):
+            gzip_value = section_settings["gzip"]
+            raise ValidationError(
+                {"settings": _('settings["gzip"] must be a boolean (got %(value)r).') % {"value": gzip_value}}
+            )
 
     def save(self, *args, **kwargs):
         sync_tenant_key(self)

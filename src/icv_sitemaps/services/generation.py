@@ -101,6 +101,60 @@ def _storage_path(filename: str, tenant_id: str = "") -> str:
     return f"{base}/{filename}"
 
 
+def _section_limits(section) -> tuple[int, int, bool]:
+    """Resolve the generation limits for *section*, from its ``settings``
+    JSON overrides where present, else the ``ICV_SITEMAPS_*`` conf value
+    (issue #61 part 2).
+
+    Reads ``max_urls_per_file``, ``max_file_size_bytes`` and ``gzip`` from
+    ``section.settings``, validating each present key against
+    :data:`icv_sitemaps.models.sections.SECTION_LIMIT_BOUNDS` (the same
+    bounds the admin enforces in ``SitemapSection.clean()``). Raises
+    :class:`~icv_sitemaps.exceptions.SitemapGenerationError` naming the
+    section, key and value on an invalid override, rather than silently
+    falling back: a stored override that generation cannot honour is a
+    configuration error, not a soft default.
+
+    Returns ``(max_urls_per_file, max_file_size_bytes, gzip_enabled)``.
+    """
+    from icv_sitemaps.conf import (
+        ICV_SITEMAPS_GZIP,
+        ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+        ICV_SITEMAPS_MAX_URLS_PER_FILE,
+    )
+    from icv_sitemaps.exceptions import SitemapGenerationError
+    from icv_sitemaps.models.sections import SECTION_LIMIT_BOUNDS
+
+    section_settings = section.settings or {}
+    fallbacks = {
+        "max_urls_per_file": ICV_SITEMAPS_MAX_URLS_PER_FILE,
+        "max_file_size_bytes": ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+    }
+    resolved: dict[str, int] = {}
+    for key, (minimum, maximum) in SECTION_LIMIT_BOUNDS.items():
+        if key not in section_settings:
+            resolved[key] = fallbacks[key]
+            continue
+        value = section_settings[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not (minimum <= value <= maximum):
+            raise SitemapGenerationError(
+                f"Section {section.name!r}: settings[{key!r}] must be an integer between "
+                f"{minimum} and {maximum} (got {value!r})."
+            )
+        resolved[key] = value
+
+    if "gzip" in section_settings:
+        gzip_enabled = section_settings["gzip"]
+        if not isinstance(gzip_enabled, bool):
+            raise SitemapGenerationError(
+                f"Section {section.name!r}: settings['gzip'] must be a boolean (got {gzip_enabled!r})."
+            )
+    else:
+        gzip_enabled = ICV_SITEMAPS_GZIP
+
+    return resolved["max_urls_per_file"], resolved["max_file_size_bytes"], gzip_enabled
+
+
 def _absolute_url(url: str) -> str:
     """Ensure a URL is absolute by prepending ICV_SITEMAPS_BASE_URL (BR-003).
 
@@ -736,12 +790,10 @@ def generate_section(
     """
     from icv_sitemaps.conf import (
         ICV_SITEMAPS_BATCH_SIZE,
-        ICV_SITEMAPS_GZIP,
-        ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
-        ICV_SITEMAPS_MAX_URLS_PER_FILE,
         ICV_SITEMAPS_NEWS_MAX_AGE_DAYS,
         ICV_SITEMAPS_STREAMING_WRITER,
     )
+    from icv_sitemaps.exceptions import SitemapGenerationError
     from icv_sitemaps.models.sections import SitemapFile, SitemapGenerationLog, SitemapSection
     from icv_sitemaps.signals import sitemap_section_generated, sitemap_section_generation_failed
 
@@ -771,6 +823,15 @@ def generate_section(
         action="generate_section",
         status="running",
     )
+
+    try:
+        max_urls, max_bytes, gzip_enabled = _section_limits(section)
+    except SitemapGenerationError as exc:
+        logger.error("generate_section: %r has an invalid settings override: %s", section.name, exc)
+        log.status = "failed"
+        log.detail = str(exc)
+        log.save(update_fields=["status", "detail"])
+        return 0
 
     storage = _get_storage()
     base_url_setting = _get_base_url()
@@ -836,9 +897,9 @@ def generate_section(
                 entries=entries,
                 sitemap_type=sitemap_type,
                 storage=storage,
-                gzip_enabled=ICV_SITEMAPS_GZIP,
-                max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
-                max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+                gzip_enabled=gzip_enabled,
+                max_urls=max_urls,
+                max_bytes=max_bytes,
             )
         else:
             total_urls, new_files = _generate_buffered(
@@ -847,9 +908,9 @@ def generate_section(
                 entries=entries,
                 sitemap_type=sitemap_type,
                 storage=storage,
-                gzip_enabled=ICV_SITEMAPS_GZIP,
-                max_urls=ICV_SITEMAPS_MAX_URLS_PER_FILE,
-                max_bytes=ICV_SITEMAPS_MAX_FILE_SIZE_BYTES,
+                gzip_enabled=gzip_enabled,
+                max_urls=max_urls,
+                max_bytes=max_bytes,
             )
 
         # Write a valid empty urlset for sections with no URLs (TS-012).
@@ -857,7 +918,7 @@ def generate_section(
             empty_data = _build_buffered_xml(sitemap_type, [])
             filename = f"{section.name}-{file_sequence}.xml"
             path = _storage_path(filename, tenant_id=tenant_id if tenant_id else section.tenant_id)
-            final_path, size = _write_buffered_to_storage(storage, path, empty_data, gzip_enabled=ICV_SITEMAPS_GZIP)
+            final_path, size = _write_buffered_to_storage(storage, path, empty_data, gzip_enabled=gzip_enabled)
             new_files.append(
                 {
                     "sequence": 0,

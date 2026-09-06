@@ -15,6 +15,9 @@ def create_section(
     url_provider: str = "",
     sitemap_type: str = "standard",
     tenant_id: str = "",
+    max_urls_per_file: int | None = None,
+    max_file_size_bytes: int | None = None,
+    gzip: bool | None = None,
     **kwargs,
 ):
     """Create a ``SitemapSection`` record.
@@ -28,13 +31,36 @@ def create_section(
     list or callable rather than a Django queryset. *model_class* and
     *urls*/*url_provider* are mutually exclusive.
 
+    *max_urls_per_file*, *max_file_size_bytes* and *gzip*, when given,
+    override the matching ``ICV_SITEMAPS_*`` setting for this section only
+    (issue #61 part 2). They are stored in the section's ``settings`` JSON
+    alongside ``url_provider``/``urls`` and validated against the same
+    bounds ``SitemapSection.clean()`` and generation enforce, raising
+    ``ValueError`` on an out-of-bounds value: this is a programming error
+    at the call site, not a value to persist and fail later at generation.
+
     Returns the created ``SitemapSection`` instance.
     """
     from icv_sitemaps.mixins import SitemapMixin
-    from icv_sitemaps.models.sections import SitemapSection
+    from icv_sitemaps.models.sections import SECTION_LIMIT_BOUNDS, SitemapSection
 
     if model_class is not None and (urls is not None or url_provider):
         raise ValueError("create_section: model_class and urls/url_provider are mutually exclusive.")
+
+    limit_overrides: dict = {}
+    for key, value in (("max_urls_per_file", max_urls_per_file), ("max_file_size_bytes", max_file_size_bytes)):
+        if value is None:
+            continue
+        minimum, maximum = SECTION_LIMIT_BOUNDS[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not (minimum <= value <= maximum):
+            raise ValueError(
+                f"create_section: {key} must be an integer between {minimum} and {maximum} (got {value!r})."
+            )
+        limit_overrides[key] = value
+    if gzip is not None:
+        if not isinstance(gzip, bool):
+            raise ValueError(f"create_section: gzip must be a boolean (got {gzip!r}).")
+        limit_overrides["gzip"] = gzip
 
     # Seed defaults from SitemapMixin attributes when available.
     defaults: dict = {
@@ -49,20 +75,27 @@ def create_section(
             section_settings["url_provider"] = url_provider
         if urls is not None:
             section_settings["urls"] = urls
+        section_settings.update(limit_overrides)
         defaults["settings"] = section_settings
-    elif model_class is not None:
-        defaults["model_path"] = f"{model_class._meta.app_label}.{model_class.__name__}"
+    else:
+        if limit_overrides:
+            section_settings = dict(kwargs.pop("settings", {}) or {})
+            section_settings.update(limit_overrides)
+            defaults["settings"] = section_settings
 
-        if isinstance(model_class, type) and issubclass(model_class, SitemapMixin):
-            mixin_type = getattr(model_class, "sitemap_type", sitemap_type)
-            if mixin_type:
-                defaults["sitemap_type"] = mixin_type
-            changefreq = getattr(model_class, "sitemap_changefreq", None)
-            if changefreq:
-                defaults["changefreq"] = changefreq
-            priority = getattr(model_class, "sitemap_priority", None)
-            if priority is not None:
-                defaults["priority"] = priority
+        if model_class is not None:
+            defaults["model_path"] = f"{model_class._meta.app_label}.{model_class.__name__}"
+
+            if isinstance(model_class, type) and issubclass(model_class, SitemapMixin):
+                mixin_type = getattr(model_class, "sitemap_type", sitemap_type)
+                if mixin_type:
+                    defaults["sitemap_type"] = mixin_type
+                changefreq = getattr(model_class, "sitemap_changefreq", None)
+                if changefreq:
+                    defaults["changefreq"] = changefreq
+                priority = getattr(model_class, "sitemap_priority", None)
+                if priority is not None:
+                    defaults["priority"] = priority
 
     # Caller overrides take precedence over seeded defaults.
     defaults.update(kwargs)
