@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A model-backed section generated inside a caller-owned transaction no
+  longer has its connection closed mid-generation** (issue #60). Previously,
+  `close_old_connections()` ran unconditionally after every batch in
+  `_iter_section_entries()`, not gated by the periodic-GC interval a few
+  lines above it. Inside a wrapping transaction the caller owns, most
+  commonly a pytest-django test using the `db` fixture, or any consumer
+  calling generation inside its own `transaction.atomic()`, this closed the
+  shared connection before the transaction finished, so every later query
+  in it failed and `generate_section`'s own exception handling swallowed
+  the failure into a silent 0-URL result. The periodic connection refresh
+  now runs on the same `_GC_INTERVAL` cadence as the GC pass, and never
+  fires while the queryset's connection is inside an atomic block it does
+  not own. Long-running background generation (a Celery task processing
+  millions of rows on its own connection) keeps its existing stale-
+  connection protection unchanged.
+
 ## [3.3.0] - 2026-09-06
 
 ### Added
