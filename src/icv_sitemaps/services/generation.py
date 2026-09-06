@@ -194,18 +194,58 @@ def _checksum(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _normalise_alternates(alternates, base_url: str) -> list[dict]:
+# Maximum length of an offending entry's repr() embedded in a
+# SitemapGenerationError message (issue #66). A consumer-supplied entry can
+# be arbitrarily large or contain unexpected content, so it is always
+# truncated before interpolation, never embedded unbounded.
+_ENTRY_REPR_LIMIT = 200
+
+
+def _truncate_repr(value, limit: int = _ENTRY_REPR_LIMIT) -> str:
+    """Return ``repr(value)``, truncated to *limit* characters.
+
+    Appends ``"...(truncated)"`` when truncation occurs, so the message
+    itself discloses that it is incomplete.
+    """
+    text = repr(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated)"
+
+
+def _normalise_alternates(
+    alternates,
+    base_url: str,
+    *,
+    section=None,
+    sitemap_type: str = "",
+) -> list[dict]:
     """Normalise a raw alternates list into the shared entry-dict contract.
 
     *alternates* is whatever ``get_sitemap_alternates()`` returned, or an
     entry's raw ``"alternates"`` key for a static section: an iterable of
     dicts each with ``"hreflang"`` and ``"href"``. ``href`` is absolutised
     the same way ``loc`` is via :func:`_absolute_url`. A dict missing
-    ``"href"`` raises ``KeyError``, matching how a missing image ``"loc"``
-    is treated: this is a caller programming error, not a value to skip.
+    ``"hreflang"`` or ``"href"`` raises
+    :class:`~icv_sitemaps.exceptions.SitemapGenerationError` naming the
+    section, the sitemap type, the missing key and the offending alternate
+    (issue #66): this is a caller programming error, not a value to skip,
+    and the section's generation run still fails either way (BR-OPS-001).
+
+    *section* and *sitemap_type* are optional and used only to enrich the
+    error message; callers that have them in scope should always pass them.
     """
+    from icv_sitemaps.exceptions import SitemapGenerationError
+
+    section_name = getattr(section, "name", "<unknown>")
     result: list[dict] = []
     for alt in alternates:
+        for key in ("hreflang", "href"):
+            if key not in alt:
+                raise SitemapGenerationError(
+                    f"Section {section_name!r} (sitemap_type={sitemap_type!r}): an alternate is "
+                    f"missing required key {key!r}: {_truncate_repr(alt)}."
+                )
         href = alt["href"]
         result.append(
             {
@@ -385,6 +425,37 @@ def _renderer_for(sitemap_type: str):
 
 def _header_for(sitemap_type: str) -> bytes:
     return _HEADERS.get(sitemap_type, _HEADERS["standard"])
+
+
+def _render_entry_or_raise(render_fn, entry: dict, *, section, sitemap_type: str) -> bytes:
+    """Call *render_fn(entry)*, turning a missing-required-key ``KeyError``
+    into a :class:`~icv_sitemaps.exceptions.SitemapGenerationError` naming
+    the section, the sitemap type, the missing key and the offending entry
+    (issue #66).
+
+    The renderers themselves take only ``entry: dict`` (they are looked up
+    generically by sitemap type and shared with :func:`_build_buffered_xml`),
+    so they have no *section* to report; this wraps the call at the two
+    places that do have it, ``_generate_streaming`` and ``_generate_buffered``,
+    rather than widening every renderer's signature for one image-only case.
+    A missing top-level ``entry["loc"]`` cannot reach here: it is already
+    enforced by :func:`_normalise_static_entry` / a truthy
+    ``get_sitemap_url()`` before an entry is yielded. The one required key a
+    renderer can still find missing is an image dict's ``"loc"``, which
+    :func:`_normalise_static_entry` and :func:`_extract_entry` pass through
+    unvalidated (issue #66).
+    """
+    from icv_sitemaps.exceptions import SitemapGenerationError
+
+    try:
+        return render_fn(entry)
+    except KeyError as exc:
+        section_name = getattr(section, "name", "<unknown>")
+        missing_key = exc.args[0] if exc.args else "<unknown>"
+        raise SitemapGenerationError(
+            f"Section {section_name!r} (sitemap_type={sitemap_type!r}): an entry is missing "
+            f"required key {missing_key!r}: {_truncate_repr(entry)}."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -658,7 +729,7 @@ def _write_buffered_to_storage(
 # ---------------------------------------------------------------------------
 
 
-def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict:
+def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str, *, section=None) -> dict:
     """Normalise a raw static-section entry into the shared entry-dict contract.
 
     *raw* is whatever the consumer declared in ``settings["urls"]`` or
@@ -667,7 +738,25 @@ def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict
     ``"alternates"``, and ``"images"``/``"video"``/``"news"`` for the
     non-standard sitemap types. ``"alternates"`` applies to every sitemap
     type, the same as the model-instance path.
+
+    A missing ``"loc"`` raises
+    :class:`~icv_sitemaps.exceptions.SitemapGenerationError` naming the
+    section, the sitemap type and the offending entry (issue #66), rather
+    than a bare ``KeyError``. Any key not named above (including an unknown
+    key with no meaning in this contract) is silently ignored: only the
+    required keys are enforced, by design, not by omission.
+
+    *section* is optional and used only to enrich the error message;
+    :func:`_iter_static_entries` always passes it.
     """
+    from icv_sitemaps.exceptions import SitemapGenerationError
+
+    if "loc" not in raw:
+        section_name = getattr(section, "name", "<unknown>")
+        raise SitemapGenerationError(
+            f"Section {section_name!r} (sitemap_type={sitemap_type!r}): a static entry is "
+            f"missing required key 'loc': {_truncate_repr(raw)}."
+        )
     raw_url = raw["loc"]
     loc = _absolute_url(raw_url) if base_url else raw_url
 
@@ -679,7 +768,9 @@ def _normalise_static_entry(raw: dict, sitemap_type: str, base_url: str) -> dict
         "lastmod": lastmod,
         "changefreq": raw.get("changefreq", "daily"),
         "priority": raw.get("priority", 0.5),
-        "alternates": _normalise_alternates(raw.get("alternates") or [], base_url),
+        "alternates": _normalise_alternates(
+            raw.get("alternates") or [], base_url, section=section, sitemap_type=sitemap_type
+        ),
     }
 
     if sitemap_type == "image":
@@ -727,15 +818,21 @@ def _iter_static_entries(
         raw_entries = list(section_settings.get("urls") or [])
 
     for raw in raw_entries:
-        yield _normalise_static_entry(raw, sitemap_type, base_url_setting)
+        yield _normalise_static_entry(raw, sitemap_type, base_url_setting, section=section)
 
 
-def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
+def _extract_entry(instance, sitemap_type: str, base_url: str, *, section=None) -> dict | None:
     """Extract a sitemap entry dict from a model instance.
 
     ``entry["alternates"]`` is read via ``get_sitemap_alternates()`` (default
     ``[]``) for every ``sitemap_type``, not only ``"standard"``: image, video
-    and news sitemaps accept ``xhtml:link`` alternates the same way.
+    and news sitemaps accept ``xhtml:link`` alternates the same way. A
+    returned alternate missing ``"hreflang"`` or ``"href"`` raises
+    :class:`~icv_sitemaps.exceptions.SitemapGenerationError` (issue #66); see
+    :func:`_normalise_alternates`.
+
+    *section* is optional and used only to enrich that error message;
+    :func:`_iter_section_entries` always passes it.
     """
     try:
         raw_url = instance.get_sitemap_url()
@@ -750,7 +847,12 @@ def _extract_entry(instance, sitemap_type: str, base_url: str) -> dict | None:
         "lastmod": _format_lastmod(lastmod_val),
         "changefreq": getattr(instance, "get_sitemap_changefreq", lambda: "daily")(),
         "priority": getattr(instance, "get_sitemap_priority", lambda: 0.5)(),
-        "alternates": _normalise_alternates(getattr(instance, "get_sitemap_alternates", list)(), base_url),
+        "alternates": _normalise_alternates(
+            getattr(instance, "get_sitemap_alternates", list)(),
+            base_url,
+            section=section,
+            sitemap_type=sitemap_type,
+        ),
     }
 
     if sitemap_type == "image":
@@ -1100,7 +1202,7 @@ def _iter_section_entries(
                 if pub_date is not None and pub_date < cutoff:
                     continue
 
-            entry = _extract_entry(instance, sitemap_type, base_url_setting)
+            entry = _extract_entry(instance, sitemap_type, base_url_setting, section=section)
             if entry is None:
                 continue
 
@@ -1157,7 +1259,7 @@ def _generate_streaming(
     writer = _StreamingSitemapWriter(sitemap_type, gzip_enabled=gzip_enabled)
     try:
         for entry in entries:
-            data = writer.render(entry)
+            data = _render_entry_or_raise(writer.render, entry, section=section, sitemap_type=sitemap_type)
             if writer.url_count >= max_urls or (writer.url_count > 0 and writer.would_exceed(data, max_bytes)):
                 temp_path, size, checksum = writer.finalize()
                 try:
@@ -1285,7 +1387,7 @@ def _generate_buffered(
         current_size = shard_base_size
 
     for entry in entries:
-        entry_size = len(renderer(entry))
+        entry_size = len(_render_entry_or_raise(renderer, entry, section=section, sitemap_type=sitemap_type))
         if current_entries and (len(current_entries) >= max_urls or current_size + entry_size > max_bytes):
             _flush()
         current_entries.append(entry)

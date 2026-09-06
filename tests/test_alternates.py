@@ -1,6 +1,9 @@
 """Tests for hreflang alternates (issue #35): the SitemapMixin contract,
 static-section entries, rendering order, escaping and the sizing
-interaction.
+interaction. Also covers a required key missing anywhere in the entry-dict
+contract raising SitemapGenerationError instead of a bare KeyError (issue
+#66): a missing alternate hreflang/href, a missing static-entry loc, and a
+missing image loc, plus the message-truncation bound on each.
 """
 
 from __future__ import annotations
@@ -11,10 +14,16 @@ from unittest.mock import patch
 
 import pytest
 
+from icv_sitemaps.exceptions import SitemapGenerationError
 from icv_sitemaps.mixins import SitemapMixin
-from icv_sitemaps.models import SitemapFile
+from icv_sitemaps.models import SitemapFile, SitemapGenerationLog
 from icv_sitemaps.services import generate_section
-from icv_sitemaps.services.generation import _extract_entry, _normalise_alternates
+from icv_sitemaps.services.generation import (
+    _ENTRY_REPR_LIMIT,
+    _extract_entry,
+    _normalise_alternates,
+    _normalise_static_entry,
+)
 from icv_sitemaps.testing.factories import SitemapSectionFactory, StaticSitemapSectionFactory
 
 # ---------------------------------------------------------------------------
@@ -251,15 +260,207 @@ class TestNoAlternatesStillDeclaresNamespace:
 
 
 # ---------------------------------------------------------------------------
-# f. Missing href raises KeyError
+# f. A required key missing anywhere in the entry-dict contract raises
+# SitemapGenerationError naming the section, sitemap_type and offending
+# entry, instead of a bare KeyError (issue #66).
 # ---------------------------------------------------------------------------
 
 
-class TestNormaliseAlternatesMissingHref:
-    def test_missing_href_raises_key_error(self):
-        with pytest.raises(KeyError):
-            _normalise_alternates([{"hreflang": "de"}], "https://example.com")
+class TestNormaliseAlternatesMissingRequiredKey:
+    def test_missing_href_raises_sitemap_generation_error(self):
+        section = SitemapSectionFactory.build(name="alt-section")
 
-    def test_missing_hreflang_raises_key_error(self):
-        with pytest.raises(KeyError):
-            _normalise_alternates([{"href": "/de/page/"}], "https://example.com")
+        with pytest.raises(SitemapGenerationError) as exc_info:
+            _normalise_alternates(
+                [{"hreflang": "de"}],
+                "https://example.com",
+                section=section,
+                sitemap_type="standard",
+            )
+
+        message = str(exc_info.value)
+        assert "alt-section" in message
+        assert "standard" in message
+        assert "href" in message
+
+    def test_missing_hreflang_raises_sitemap_generation_error(self):
+        section = SitemapSectionFactory.build(name="alt-section")
+
+        with pytest.raises(SitemapGenerationError) as exc_info:
+            _normalise_alternates(
+                [{"href": "/de/page/"}],
+                "https://example.com",
+                section=section,
+                sitemap_type="standard",
+            )
+
+        message = str(exc_info.value)
+        assert "alt-section" in message
+        assert "standard" in message
+        assert "hreflang" in message
+
+    def test_valid_alternate_still_normalises(self):
+        """Control: a valid alternate is unaffected by the validation above."""
+        section = SitemapSectionFactory.build(name="alt-section")
+
+        result = _normalise_alternates(
+            [{"hreflang": "de", "href": "/de/page/"}],
+            "https://example.com",
+            section=section,
+            sitemap_type="standard",
+        )
+
+        assert result == [{"hreflang": "de", "href": "https://example.com/de/page/"}]
+
+
+class TestStaticEntryMissingLoc:
+    def test_missing_loc_raises_sitemap_generation_error(self):
+        section = SitemapSectionFactory.build(name="static-loc-section")
+
+        with pytest.raises(SitemapGenerationError) as exc_info:
+            _normalise_static_entry({"changefreq": "weekly"}, "standard", "https://example.com", section=section)
+
+        message = str(exc_info.value)
+        assert "static-loc-section" in message
+        assert "standard" in message
+        assert "loc" in message
+
+    def test_generate_section_records_failure_for_missing_loc(self, db, tmp_path, settings):
+        """End-to-end: generate_section() still fails the section via
+        BR-OPS-001, and the recorded detail now names the section and key
+        rather than being the bare string 'loc'.
+        """
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        section = StaticSitemapSectionFactory(
+            name="static-loc-missing",
+            settings={"urls": [{"changefreq": "weekly"}]},
+        )
+
+        with _apply_conf_patches(), pytest.raises(SitemapGenerationError):
+            generate_section(section)
+
+        log = SitemapGenerationLog.objects.filter(section=section, action="generate_section").last()
+        assert log is not None
+        assert log.status == "failed"
+        assert log.detail != "loc"
+        assert "static-loc-missing" in log.detail
+        assert "loc" in log.detail
+        assert not SitemapFile.objects.filter(section=section).exists()
+
+    def test_valid_static_entry_still_generates(self, db, tmp_path, settings):
+        """Control: a valid static entry (with 'loc') still generates
+        correctly, unaffected by the validation above.
+        """
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        section = StaticSitemapSectionFactory(
+            name="static-loc-valid",
+            settings={"urls": [{"loc": "/pricing/"}]},
+        )
+
+        with _apply_conf_patches():
+            url_count = generate_section(section)
+
+        assert url_count == 1
+        sitemap_file = SitemapFile.objects.get(section=section)
+        xml = _read_storage_file(sitemap_file.storage_path)
+        assert "<loc>https://example.com/pricing/</loc>" in xml
+
+
+class TestImageMissingLoc:
+    """An image dict inside a static entry's 'images' list is passed through
+    unvalidated by _normalise_static_entry and only read at render time
+    (_render_image_url), so the missing-key check has to live at the render
+    call sites in _generate_streaming / _generate_buffered instead.
+    """
+
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_missing_image_loc_raises_sitemap_generation_error(self, db, tmp_path, settings, streaming):
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        section = StaticSitemapSectionFactory(
+            name="static-image-loc-missing",
+            sitemap_type="image",
+            settings={
+                "urls": [
+                    {
+                        "loc": "/gallery/",
+                        "images": [{"caption": "no loc here"}],
+                    }
+                ]
+            },
+        )
+
+        with (
+            _apply_conf_patches(),
+            patch("icv_sitemaps.conf.ICV_SITEMAPS_STREAMING_WRITER", streaming),
+            pytest.raises(SitemapGenerationError) as exc_info,
+        ):
+            generate_section(section)
+
+        message = str(exc_info.value)
+        assert "static-image-loc-missing" in message
+        assert "image" in message
+        assert "loc" in message
+
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_valid_image_entry_still_generates(self, db, tmp_path, settings, streaming):
+        """Control: a valid image entry (with 'loc') still generates
+        correctly on both the streaming and buffered writers.
+        """
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        section = StaticSitemapSectionFactory(
+            name="static-image-loc-valid",
+            sitemap_type="image",
+            settings={
+                "urls": [
+                    {
+                        "loc": "/gallery/",
+                        "images": [{"loc": "https://cdn.example.com/gallery.jpg"}],
+                    }
+                ]
+            },
+        )
+
+        with _apply_conf_patches(), patch("icv_sitemaps.conf.ICV_SITEMAPS_STREAMING_WRITER", streaming):
+            url_count = generate_section(section)
+
+        assert url_count == 1
+        sitemap_file = SitemapFile.objects.get(section=section)
+        xml = _read_storage_file(sitemap_file.storage_path)
+        assert "<image:loc>https://cdn.example.com/gallery.jpg</image:loc>" in xml
+
+
+# ---------------------------------------------------------------------------
+# g. The offending entry embedded in the message is truncated, never
+# interpolated unbounded (issue #66).
+# ---------------------------------------------------------------------------
+
+
+class TestEntryReprTruncation:
+    def test_oversized_static_entry_message_is_bounded(self):
+        section = SitemapSectionFactory.build(name="truncation-section")
+        oversized = {"changefreq": "x" * 5000}
+
+        with pytest.raises(SitemapGenerationError) as exc_info:
+            _normalise_static_entry(oversized, "standard", "https://example.com", section=section)
+
+        message = str(exc_info.value)
+        # The message carries a short prefix plus the truncated repr; it
+        # must stay well short of the 5000-character input regardless of
+        # exactly how the prefix is worded.
+        assert len(message) < _ENTRY_REPR_LIMIT + 300
+        assert "...(truncated)" in message
+
+    def test_oversized_alternate_message_is_bounded(self):
+        section = SitemapSectionFactory.build(name="truncation-section")
+        oversized = {"hreflang": "de", "href_typo": "x" * 5000}
+
+        with pytest.raises(SitemapGenerationError) as exc_info:
+            _normalise_alternates([oversized], "https://example.com", section=section, sitemap_type="standard")
+
+        message = str(exc_info.value)
+        assert len(message) < _ENTRY_REPR_LIMIT + 300
+        assert "...(truncated)" in message
