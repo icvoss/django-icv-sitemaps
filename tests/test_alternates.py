@@ -299,6 +299,35 @@ class TestNormaliseAlternatesMissingRequiredKey:
         assert "standard" in message
         assert "hreflang" in message
 
+    def test_generate_section_records_failure_for_missing_href(self, db, tmp_path, settings):
+        """End-to-end: an alternate missing ``href`` inside a real section run.
+
+        The two tests above call ``_normalise_alternates()`` directly, so they
+        exercise the new signature rather than the behaviour change: against
+        pre-#66 code they fail with ``TypeError`` on the ``section=`` keyword,
+        which proves nothing about what a consumer observes. This one reaches
+        the same raise site through ``generate_section()``, so on pre-#66 code
+        it fails with the bare ``KeyError`` this issue exists to remove, and
+        it asserts the log detail rather than only the exception type.
+        """
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        section = StaticSitemapSectionFactory(
+            name="alt-href-missing",
+            settings={"urls": [{"loc": "/pricing/", "alternates": [{"hreflang": "de"}]}]},
+        )
+
+        with _apply_conf_patches(), pytest.raises(SitemapGenerationError):
+            generate_section(section)
+
+        log = SitemapGenerationLog.objects.filter(section=section, action="generate_section").last()
+        assert log is not None
+        assert log.status == "failed"
+        assert log.detail != "href"
+        assert "alt-href-missing" in log.detail
+        assert "href" in log.detail
+        assert not SitemapFile.objects.filter(section=section).exists()
+
     def test_valid_alternate_still_normalises(self):
         """Control: a valid alternate is unaffected by the validation above."""
         section = SitemapSectionFactory.build(name="alt-section")
