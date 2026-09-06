@@ -22,9 +22,9 @@ from unittest.mock import patch
 
 import pytest
 from django.db import connection
+from sitemaps_testapp.models import Article
 
 from icv_sitemaps.services.generation import _GC_INTERVAL, _iter_section_entries
-from sitemaps_testapp.models import Article
 
 
 def _make_articles(count: int) -> None:
