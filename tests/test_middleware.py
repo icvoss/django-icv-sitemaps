@@ -504,7 +504,13 @@ class TestServeRedirectFailsOpenOnTelemetry:
         ``_record_hit`` makes, rather than ``_record_hit`` as a whole:
         patching the method would only prove ``_serve_redirect`` tolerates
         ``_record_hit`` raising, not that the guard inside ``_record_hit``
-        actually catches a failure from the real DB call it wraps.
+        actually catches a failure from the real DB call it wraps. The
+        side effect only raises for the ``pk=`` keyed call ``_record_hit``
+        makes; the rule lookup also runs through ``RedirectRule.objects``
+        (via ``.active().filter(...)``) and must still hit the real
+        database, or the lookup itself would fail and the request would
+        pass through for the wrong reason instead of exercising the
+        telemetry guard.
 
         Fails against pre-fix code: the ``RedirectRule.objects.filter(...).update()``
         call sat directly in ``_serve_redirect`` with no guard at all, so a
@@ -518,7 +524,14 @@ class TestServeRedirectFailsOpenOnTelemetry:
         middleware = make_middleware()
         request = rf.get("/old/")
 
-        with patch.object(RedirectRule.objects, "filter", side_effect=Exception("db boom")):
+        original_filter = RedirectRule.objects.filter
+
+        def _raise_only_for_hit_update(*args, **kwargs):
+            if "pk" in kwargs:
+                raise Exception("db boom")
+            return original_filter(*args, **kwargs)
+
+        with patch.object(RedirectRule.objects, "filter", side_effect=_raise_only_for_hit_update):
             response = middleware(request)
 
         assert response.status_code == 301
@@ -570,8 +583,21 @@ class TestServeRedirectFailsOpenOnTelemetry:
             response = middleware(request)
 
         assert response.status_code == 301
-        assert "receiver" in caplog.text
-        assert "failed" in caplog.text
+
+        # Assert on a record from *this* module's logger carrying the
+        # receiver's exception. Neither a substring of caplog.text nor the
+        # exception text alone is sufficient: "receiver" and "failed" both
+        # appear in the log call's own format string, and Django's
+        # send_robust logs the receiver exception itself under the
+        # "django.dispatch" logger, so both assertions pass even when this
+        # middleware discards the exception entirely. Verified by injecting
+        # both faults: each still passed until the check was keyed on
+        # record.name.
+        ours = [r for r in caplog.records if r.name == "icv_sitemaps.middleware"]
+        assert ours, "middleware logged nothing for the failing receiver"
+        assert any(r.exc_info is not None and isinstance(r.exc_info[1], RuntimeError) for r in ours), (
+            "middleware did not log the receiver's own exception"
+        )
 
 
 class TestGoneResolver:
