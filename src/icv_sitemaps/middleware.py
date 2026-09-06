@@ -84,27 +84,19 @@ class RedirectMiddleware:
         return check_redirect(request.path, tenant_id=tenant_id, status_codes=status_codes)
 
     def _serve_redirect(self, rule: dict, request) -> HttpResponse:
-        """Return the appropriate redirect or 410 response."""
-        from django.db.models import F
-        from django.utils import timezone
+        """Return the appropriate redirect or 410 response.
 
-        from icv_sitemaps.models.redirects import RedirectRule
-        from icv_sitemaps.signals import redirect_matched
-
-        # Increment hit_count atomically.
-        RedirectRule.objects.filter(pk=rule["id"]).update(
-            hit_count=F("hit_count") + 1,
-            last_hit_at=timezone.now(),
-        )
+        Telemetry (the hit-count update and the ``redirect_matched`` signal)
+        is best-effort: either failing must not cost the caller their
+        redirect, so both run inside their own fail-open guards rather than
+        the guard living around the whole method. Building and returning the
+        response itself is not guarded: if that fails there is no correct
+        response left to construct, so the exception propagates.
+        """
+        self._record_hit(rule)
+        self._send_redirect_matched(rule, request)
 
         status_code = rule["status_code"]
-
-        redirect_matched.send(
-            sender=RedirectRule,
-            rule=rule,
-            path=request.path,
-            status_code=status_code,
-        )
 
         if status_code == 410:
             return HttpResponseGone()
@@ -117,6 +109,58 @@ class RedirectMiddleware:
         if status_code in (301, 308):
             return HttpResponsePermanentRedirect(destination)
         return HttpResponseRedirect(destination)
+
+    def _record_hit(self, rule: dict) -> None:
+        """Increment ``hit_count`` and ``last_hit_at``, tolerating a DB failure.
+
+        Losing a hit count is acceptable; losing the redirect it belongs to
+        is not, so a failure here is logged and swallowed rather than
+        allowed to reach ``_serve_redirect``'s caller.
+        """
+        from django.db.models import F
+        from django.utils import timezone
+
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        try:
+            RedirectRule.objects.filter(pk=rule["id"]).update(
+                hit_count=F("hit_count") + 1,
+                last_hit_at=timezone.now(),
+            )
+        except Exception:
+            logger.exception(
+                "RedirectMiddleware: error recording hit for rule %r, serving redirect anyway.",
+                rule["id"],
+            )
+
+    def _send_redirect_matched(self, rule: dict, request) -> None:
+        """Fire ``redirect_matched``, tolerating a raising receiver.
+
+        Uses ``send_robust`` rather than a bare ``try/except`` around
+        ``send()``: ``send_robust`` still calls every receiver even when an
+        earlier one raises (a plain ``send()`` would stop at the first
+        exception, and a middleware-level ``try/except`` would only recover
+        from it, having already skipped the rest). The collected exceptions
+        are logged individually rather than discarded, per the "no silent
+        except-pass" rule: a broken receiver should show up in the logs, not
+        just vanish.
+        """
+        from icv_sitemaps.models.redirects import RedirectRule
+        from icv_sitemaps.signals import redirect_matched
+
+        results = redirect_matched.send_robust(
+            sender=RedirectRule,
+            rule=rule,
+            path=request.path,
+            status_code=rule["status_code"],
+        )
+        for receiver, response in results:
+            if isinstance(response, Exception):
+                logger.exception(
+                    "RedirectMiddleware: redirect_matched receiver %r failed.",
+                    receiver,
+                    exc_info=response,
+                )
 
     def _maybe_record_404(self, request) -> None:
         """Track a 404 response if 404 tracking is enabled."""
