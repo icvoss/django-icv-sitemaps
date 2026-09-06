@@ -389,6 +389,32 @@ skips them silently. Their content changes on deploy, not on data writes, so
 call `mark_section_stale("marketing-pages")` from your deploy pipeline, or
 rely on the periodic `regenerate_all_sitemaps` task to pick them up.
 
+### Per-section generation limits
+
+Any section, model or static, can override `ICV_SITEMAPS_MAX_URLS_PER_FILE`,
+`ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` and `ICV_SITEMAPS_GZIP` for itself by
+setting `max_urls_per_file`, `max_file_size_bytes` and/or `gzip` in the
+section's `settings`. A key that is absent falls back to the matching
+`ICV_SITEMAPS_*` setting as before.
+
+```python
+from icv_sitemaps.services import create_section
+
+create_section(
+    "high-volume-products",
+    model_class=Product,
+    max_urls_per_file=10000,
+)
+```
+
+The override is stored, not run-time-only: two generation runs of the same
+section always agree on how it is sharded. An invalid value (wrong type, or
+outside the sitemap protocol's bounds) is rejected by `create_section()`
+with `ValueError`, by the admin via `SitemapSection.clean()`, and, for a
+value that reached the database another way, fails that section's
+generation with a `SitemapGenerationLog` recorded as `failed` rather than
+generating with a silently-ignored override.
+
 ---
 
 ## Discovery contract: the mixin is a convenience, not a requirement
@@ -783,6 +809,9 @@ sensible default so the package works out of the box for local development.
 | `ICV_SITEMAPS_404_TRACKING_SAMPLE_RATE` | `float` | `1.0` | Fraction of 404s to track (0.0--1.0) |
 | `ICV_SITEMAPS_404_IGNORE_PATTERNS` | `list` | `[r"\.(?:css\|js\|...)$"]` | Regex patterns for paths to ignore when tracking 404s |
 | `ICV_SITEMAPS_GONE_RESOLVER` | `str` | `""` | Dotted path to a callable answering "is this already-404 path deliberately gone?" |
+| `settings.max_urls_per_file` | `int` | `ICV_SITEMAPS_MAX_URLS_PER_FILE` | Per-section override, any section type (issue #61). Must be between 1 and 50,000 |
+| `settings.max_file_size_bytes` | `int` | `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` | Per-section override, any section type (issue #61). Must be between 1 and 52,428,800 |
+| `settings.gzip` | `bool` | `ICV_SITEMAPS_GZIP` | Per-section override, any section type (issue #61) |
 
 ### Auto-Sections Configuration
 
