@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **A consumer entry missing a required key now raises
+  `SitemapGenerationError` instead of a bare `KeyError`** (issue #66),
+  shipping in 3.5.0. This is the entry-dict contract a consuming project
+  supplies through a `SitemapMixin` method or a static section's `urls`/
+  `url_provider`: a static entry with no `loc`, an alternate with no
+  `hreflang` or `href`, or an image dict with no `loc`. Previously the
+  section's `generate_section()` still failed, but the recorded
+  `SitemapGenerationLog.detail` was just the bare key string (`'loc'`),
+  which told an operator nothing about which section or provider produced
+  the bad entry. A consumer catching `KeyError` around generation must now
+  catch `icv_sitemaps.exceptions.SitemapGenerationError` instead; the
+  message names the section, the sitemap type, the missing key and the
+  offending entry (truncated to 200 characters). The section still fails
+  the run either way: this changes what is caught and what the log says,
+  not whether generation succeeds. Unknown keys on an entry remain
+  silently ignored, as before; only the required keys are enforced.
+
 ### Fixed
 
 - **`RedirectMiddleware` now actually fails open when serving a matched
