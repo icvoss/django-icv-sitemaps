@@ -1065,10 +1065,18 @@ def _iter_section_entries(
       promoted cycles before they pile up
     - calling ``reset_queries()`` to prevent any residual query-log
       growth (safe even when ``DEBUG=False``)
+    - calling ``close_old_connections()`` on that same ``_GC_INTERVAL``
+      cadence, and only when the queryset's connection is not inside an
+      atomic block. Dropping a stale connection is only ever correct for
+      a long-running background job on its own connection; closing a
+      connection that belongs to someone else's transaction (a caller's
+      ``transaction.atomic()``, or pytest-django's per-test transaction)
+      is never correct and breaks every later query in that transaction
+      (issue #60).
     """
     import gc
 
-    from django.db import close_old_connections, reset_queries
+    from django.db import close_old_connections, connections, reset_queries
 
     news_date_field = ""
     if sitemap_type == "news":
@@ -1108,12 +1116,19 @@ def _iter_section_entries(
 
         # Force a full GC collection every _GC_INTERVAL chunks to
         # reclaim ref-cycles promoted to gen-2. On a 2.4M-row section
-        # with batch_size=5000 this fires ~every 50K rows — frequent
+        # with batch_size=5000 this fires ~every 50K rows, frequent
         # enough to bound RSS, infrequent enough to be negligible cost.
         if chunk_count % _GC_INTERVAL == 0:
             gc.collect()
 
-        close_old_connections()
+            # Only drop the connection if it is not inside an atomic
+            # block we do not own (issue #60): closing it mid-transaction
+            # breaks every later query in that transaction, including a
+            # caller's own transaction.atomic() and pytest-django's
+            # per-test transaction.
+            conn = connections[queryset.db]
+            if not conn.in_atomic_block:
+                close_old_connections()
 
 
 def _generate_streaming(
