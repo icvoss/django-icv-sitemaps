@@ -18,6 +18,8 @@
   that section's generation run with a `SitemapGenerationLog` recorded as
   `failed` rather than raising, the same way an unresolvable
   `model_path` is handled today.
+- One migration, `0010_sitemapsection_settings_help_text`, updates the admin help text on `SitemapSection.settings` to name the new keys. It changes no column and no data.
+
 ## [3.3.1] - 2026-09-06
 
 ### Fixed
