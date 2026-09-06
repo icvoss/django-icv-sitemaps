@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`RedirectMiddleware` now actually fails open when serving a matched
+  rule, not only when looking one up** (issue #65). The hit-count update
+  and the `redirect_matched` signal send were previously called from
+  `_serve_redirect()` outside the middleware's `try/except` guards, so a
+  raising signal receiver, or a failing `RedirectRule.objects.update()`,
+  turned a redirect into an unhandled 500 instead of the documented
+  fail-open response. Both are now independently guarded: a failing
+  hit-count update is logged and swallowed, and `redirect_matched` is sent
+  with `Signal.send_robust()` so every receiver still runs even when an
+  earlier one raises, with any collected exception logged rather than
+  discarded. Building and returning the redirect or 410 response itself
+  is unchanged and still not guarded, since there is no correct fallback
+  response to construct if that fails.
+
 ## [3.4.0] - 2026-09-06
 
 ### Added

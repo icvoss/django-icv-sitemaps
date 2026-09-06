@@ -405,6 +405,201 @@ class TestTenantResolutionFailsClosed:
         assert not RedirectLog.objects.filter(path="/not-found/").exists()
 
 
+class TestServeRedirectFailsOpenOnTelemetry:
+    """Serving a matched rule must succeed even when its telemetry fails (#65).
+
+    Before the fix, ``_serve_redirect`` was called outside the middleware's
+    ``try/except`` guards, so a raising ``redirect_matched`` receiver or a
+    failing hit-count update turned a redirect into an unhandled 500 rather
+    than the documented "fail-open" response. Each negative case below has a
+    passing control in the same class that proves the assertion is capable
+    of failing: without the fix, the negative case raises instead of
+    returning the redirect.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disconnect_receivers(self):
+        """Ensure no receiver connected by a test here leaks into another."""
+        from icv_sitemaps.signals import redirect_matched
+
+        connected = []
+        original_connect = redirect_matched.connect
+
+        def _tracking_connect(receiver, **kwargs):
+            connected.append((receiver, kwargs.get("sender")))
+            return original_connect(receiver, **kwargs)
+
+        with patch.object(redirect_matched, "connect", _tracking_connect):
+            yield
+
+        for receiver, sender in connected:
+            redirect_matched.disconnect(receiver, sender=sender)
+
+    def test_control_redirect_served_when_receiver_does_not_raise(self, db, rf, make_middleware):
+        """Control for the two raising-receiver cases below.
+
+        Proves a non-raising receiver still gets the redirect (the baseline
+        the raising cases must not regress from).
+        """
+        from icv_sitemaps.signals import redirect_matched
+
+        RedirectRuleFactory(source_pattern="/old/", destination="/new/", status_code=301)
+        redirect_matched.connect(lambda sender, **kwargs: None, weak=False)
+
+        middleware = make_middleware()
+        request = rf.get("/old/")
+        response = middleware(request)
+
+        assert response.status_code == 301
+        assert response["Location"] == "/new/"
+
+    def test_redirect_served_when_receiver_raises(self, db, rf, make_middleware):
+        """A raising receiver must not turn the redirect into a 500.
+
+        Fails against pre-fix code: ``redirect_matched.send()`` propagates
+        the receiver's exception, which is unhandled outside
+        ``_check_redirect``'s guard, so the middleware raises instead of
+        returning the 301.
+        """
+        from icv_sitemaps.signals import redirect_matched
+
+        def _raising_receiver(sender, **kwargs):
+            raise RuntimeError("receiver boom")
+
+        RedirectRuleFactory(source_pattern="/old/", destination="/new/", status_code=301)
+        redirect_matched.connect(_raising_receiver, weak=False)
+
+        middleware = make_middleware()
+        request = rf.get("/old/")
+        response = middleware(request)
+
+        assert response.status_code == 301
+        assert response["Location"] == "/new/"
+
+    def test_gone_rule_served_when_receiver_raises(self, db, rf, make_path_middleware):
+        """Same guarantee on the 410/gone path, served from inside the 404 branch.
+
+        Fails against pre-fix code for the same reason as the live-redirect
+        case: the second ``_serve_redirect`` call (line 69) is also outside
+        any guard.
+        """
+        from icv_sitemaps.signals import redirect_matched
+
+        def _raising_receiver(sender, **kwargs):
+            raise RuntimeError("receiver boom")
+
+        RedirectRuleFactory(source_pattern="/deleted-product/", destination="", status_code=410)
+        redirect_matched.connect(_raising_receiver, weak=False)
+
+        middleware = make_path_middleware(resolved_paths=set())
+        request = rf.get("/deleted-product/")
+        response = middleware(request)
+
+        assert response.status_code == 410
+
+    def test_redirect_served_when_hit_count_update_fails(self, db, rf, make_middleware):
+        """A failing hit-count update must not cost the caller their redirect.
+
+        Patches ``RedirectRule.objects.filter`` itself, the exact call
+        ``_record_hit`` makes, rather than ``_record_hit`` as a whole:
+        patching the method would only prove ``_serve_redirect`` tolerates
+        ``_record_hit`` raising, not that the guard inside ``_record_hit``
+        actually catches a failure from the real DB call it wraps. The
+        side effect only raises for the ``pk=`` keyed call ``_record_hit``
+        makes; the rule lookup also runs through ``RedirectRule.objects``
+        (via ``.active().filter(...)``) and must still hit the real
+        database, or the lookup itself would fail and the request would
+        pass through for the wrong reason instead of exercising the
+        telemetry guard.
+
+        Fails against pre-fix code: the ``RedirectRule.objects.filter(...).update()``
+        call sat directly in ``_serve_redirect`` with no guard at all, so a
+        raising queryset update propagated as an unhandled exception instead
+        of the 301.
+        """
+        from icv_sitemaps.models.redirects import RedirectRule
+
+        RedirectRuleFactory(source_pattern="/old/", destination="/new/", status_code=301)
+
+        middleware = make_middleware()
+        request = rf.get("/old/")
+
+        original_filter = RedirectRule.objects.filter
+
+        def _raise_only_for_hit_update(*args, **kwargs):
+            if "pk" in kwargs:
+                raise Exception("db boom")
+            return original_filter(*args, **kwargs)
+
+        with patch.object(RedirectRule.objects, "filter", side_effect=_raise_only_for_hit_update):
+            response = middleware(request)
+
+        assert response.status_code == 301
+        assert response["Location"] == "/new/"
+
+    def test_control_hit_count_increments_and_signal_fires_when_nothing_fails(self, db, rf, make_middleware):
+        """Regression control: normal telemetry behaviour is unchanged.
+
+        Proves hit_count still increments and redirect_matched still fires
+        with the documented kwargs when nothing raises, which the failure
+        cases above must not have broken.
+        """
+        from icv_sitemaps.signals import redirect_matched
+
+        rule = RedirectRuleFactory(source_pattern="/old/", destination="/new/", status_code=301)
+
+        received = []
+        redirect_matched.connect(lambda sender, **kwargs: received.append(kwargs), weak=False)
+
+        middleware = make_middleware()
+        request = rf.get("/old/")
+        response = middleware(request)
+
+        assert response.status_code == 301
+        assert response["Location"] == "/new/"
+
+        rule.refresh_from_db()
+        assert rule.hit_count == 1
+        assert rule.last_hit_at is not None
+
+        assert len(received) == 1
+        assert received[0]["path"] == "/old/"
+        assert received[0]["status_code"] == 301
+        assert received[0]["rule"]["id"] == rule.id
+
+    def test_receiver_exception_is_logged(self, db, rf, make_middleware, caplog):
+        """The collected receiver exception is logged, not silently discarded."""
+        from icv_sitemaps.signals import redirect_matched
+
+        def _raising_receiver(sender, **kwargs):
+            raise RuntimeError("receiver boom")
+
+        RedirectRuleFactory(source_pattern="/old/", destination="/new/", status_code=301)
+        redirect_matched.connect(_raising_receiver, weak=False)
+
+        middleware = make_middleware()
+        request = rf.get("/old/")
+        with caplog.at_level("ERROR"):
+            response = middleware(request)
+
+        assert response.status_code == 301
+
+        # Assert on a record from *this* module's logger carrying the
+        # receiver's exception. Neither a substring of caplog.text nor the
+        # exception text alone is sufficient: "receiver" and "failed" both
+        # appear in the log call's own format string, and Django's
+        # send_robust logs the receiver exception itself under the
+        # "django.dispatch" logger, so both assertions pass even when this
+        # middleware discards the exception entirely. Verified by injecting
+        # both faults: each still passed until the check was keyed on
+        # record.name.
+        ours = [r for r in caplog.records if r.name == "icv_sitemaps.middleware"]
+        assert ours, "middleware logged nothing for the failing receiver"
+        assert any(r.exc_info is not None and isinstance(r.exc_info[1], RuntimeError) for r in ours), (
+            "middleware did not log the receiver's own exception"
+        )
+
+
 class TestGoneResolver:
     """ICV_SITEMAPS_GONE_RESOLVER: consumer hook for gone-resolution (#27).
 
