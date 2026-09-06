@@ -279,7 +279,11 @@ def add_redirect(
         The newly created ``RedirectRule`` instance.
 
     Raises:
-        ValueError: If inputs are invalid.
+        ValueError: If ``status_code`` is not one of the supported redirect
+            status codes, ``match_type`` is not one of ``"exact"``,
+            ``"prefix"`` or ``"regex"``, ``source_pattern`` is empty, or
+            ``destination`` is empty for a non-410 ``status_code`` (raised
+            by :func:`_validate_redirect_fields`).
     """
     from icv_sitemaps.models.redirects import RedirectRule
 
@@ -314,6 +318,11 @@ def bulk_import_redirects(
 
     Each dict should contain at minimum ``source_pattern`` and ``destination``.
     Optional keys: ``status_code``, ``match_type``, ``name``.
+
+    A row that fails, including a missing ``source_pattern`` key or a
+    ``RedirectRule`` that fails to save, is caught per row and appended to
+    the returned ``errors`` list rather than raised, so one bad row never
+    aborts the batch.
 
     Returns a summary dict with ``created``, ``updated``, and ``errors`` counts.
     """
@@ -386,10 +395,12 @@ def bulk_create_redirects(
     Each row is validated with the same rules :func:`add_redirect` applies
     (via the shared :func:`_validate_redirect_fields` helper): a valid
     ``status_code``, a valid ``match_type``, a non-empty ``source_pattern``,
-    and a required ``destination`` unless ``status_code == 410``. A row
-    that fails validation is appended to the returned ``errors`` list with
-    its index and does not abort the batch, matching
-    ``bulk_import_redirects``'s per-row error handling.
+    and a required ``destination`` unless ``status_code == 410``. Unlike
+    :func:`add_redirect`, the ``ValueError`` :func:`_validate_redirect_fields`
+    raises is caught here per row rather than propagated: a row that fails
+    validation is appended to the returned ``errors`` list with its index
+    and does not abort the batch, matching ``bulk_import_redirects``'s
+    per-row error handling.
 
     Conflict handling: an ``exact``-type row whose ``(source_pattern,
     tenant_id)`` collides with an existing row violates the partial unique

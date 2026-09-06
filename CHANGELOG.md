@@ -18,6 +18,18 @@
   is unchanged and still not guarded, since there is no correct fallback
   response to construct if that fails.
 
+### Removed
+
+- **`PingError` and `RedirectError` removed from `icv_sitemaps.exceptions`**
+  (issue #67). Neither was ever raised: `ping_search_engines()` records a
+  failed per-engine ping as status `0` rather than raising, and the
+  redirect helpers in `services/redirects.py` already raise plain
+  `ValueError` for invalid input, which is now the documented contract for
+  `add_redirect()`. Nothing in this package or a working consumer could
+  have been catching either class, so this removes dead surface only: an
+  `except IcvSitemapsError` handler, and any handler already catching
+  `ValueError` from the redirect helpers, is unaffected.
+
 ## [3.4.0] - 2026-09-06
 
 ### Added
