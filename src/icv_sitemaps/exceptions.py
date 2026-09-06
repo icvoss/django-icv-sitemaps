@@ -13,14 +13,6 @@ class StorageError(IcvSitemapsError):
     """Raised when storage operations fail."""
 
 
-class PingError(IcvSitemapsError):
-    """Raised when search engine ping fails."""
-
-
-class RedirectError(IcvSitemapsError):
-    """Raised when redirect operations fail."""
-
-
 class TenantResolutionError(IcvSitemapsError):
     """Raised when ``ICV_SITEMAPS_TENANT_PREFIX_FUNC`` cannot resolve a tenant.
 
