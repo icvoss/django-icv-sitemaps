@@ -9,6 +9,7 @@ class IcvSitemapsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self) -> None:
+        from . import checks  # noqa: F401, registers system checks
         from . import handlers  # noqa: F401 — connect signal handlers
         from .auto_sections import connect_auto_section_signals
 
