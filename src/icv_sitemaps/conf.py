@@ -106,6 +106,13 @@ ICV_SITEMAPS_ADS_TXT_EMPTY_PLACEHOLDER: bool = getattr(settings, "ICV_SITEMAPS_A
 # Dotted path to tenant prefix callable
 ICV_SITEMAPS_TENANT_PREFIX_FUNC: str = getattr(settings, "ICV_SITEMAPS_TENANT_PREFIX_FUNC", "")
 
+# Dotted path to a callable that accepts a SitemapSection and returns a
+# context manager. Generation enters it while constructing and evaluating a
+# model section's queryset. Consumers use this to activate their own
+# row-level-security context in background jobs; the package does not own or
+# interpret that context.
+ICV_SITEMAPS_QUERYSET_CONTEXT: str = getattr(settings, "ICV_SITEMAPS_QUERYSET_CONTEXT", "")
+
 # Use Celery for background generation
 ICV_SITEMAPS_ASYNC_GENERATION: bool = getattr(settings, "ICV_SITEMAPS_ASYNC_GENERATION", True)
 

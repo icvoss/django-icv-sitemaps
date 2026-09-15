@@ -11,6 +11,7 @@ import re
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape
@@ -870,6 +871,58 @@ def _extract_entry(instance, sitemap_type: str, base_url: str, *, section=None) 
     return entry
 
 
+@contextmanager
+def _queryset_context(*, section, model_class):
+    """Enter consumer-owned context around a model section's queryset work.
+
+    ``ICV_SITEMAPS_QUERYSET_CONTEXT`` is a dotted callable accepting the
+    ``SitemapSection`` and returning a context manager. ``SitemapMixin``
+    models may additionally override ``get_sitemap_queryset_context(section)``.
+    Both contexts remain active while the queryset is constructed and lazily
+    evaluated, so background generation can use a consumer's RLS context
+    without this package importing or implementing tenancy infrastructure.
+    """
+    from icv_sitemaps.conf import ICV_SITEMAPS_QUERYSET_CONTEXT
+
+    package_context = nullcontext()
+    if ICV_SITEMAPS_QUERYSET_CONTEXT:
+        package_context = import_string(ICV_SITEMAPS_QUERYSET_CONTEXT)(section)
+
+    model_context_factory = getattr(model_class, "get_sitemap_queryset_context", None)
+    model_context = model_context_factory(section) if model_context_factory else nullcontext()
+
+    with package_context:
+        with model_context:
+            yield
+
+
+def _iter_model_section_entries(
+    *,
+    section,
+    model_class,
+    sitemap_type: str,
+    base_url_setting: str,
+    cutoff,
+    batch_size: int,
+):
+    """Yield model entries while the consumer's queryset context is active."""
+    with _queryset_context(section=section, model_class=model_class):
+        try:
+            queryset = model_class.get_sitemap_queryset()
+        except AttributeError:
+            queryset = model_class.objects.all()
+
+        yield from _iter_section_entries(
+            queryset=queryset,
+            section=section,
+            sitemap_type=sitemap_type,
+            base_url_setting=base_url_setting,
+            cutoff=cutoff,
+            model_class=model_class,
+            batch_size=batch_size,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public service functions
 # ---------------------------------------------------------------------------
@@ -955,23 +1008,17 @@ def generate_section(
             log.save(update_fields=["status", "detail"])
             return 0
 
-        try:
-            queryset = model_class.get_sitemap_queryset()
-        except AttributeError:
-            queryset = model_class.objects.all()
-
         # News max-age cutoff (BR-015).
         cutoff = None
         if sitemap_type == "news":
             cutoff = django_timezone.now() - django_timezone.timedelta(days=ICV_SITEMAPS_NEWS_MAX_AGE_DAYS)
 
-        entries = _iter_section_entries(
-            queryset=queryset,
+        entries = _iter_model_section_entries(
             section=section,
+            model_class=model_class,
             sitemap_type=sitemap_type,
             base_url_setting=base_url_setting,
             cutoff=cutoff,
-            model_class=model_class,
             batch_size=ICV_SITEMAPS_BATCH_SIZE,
         )
 

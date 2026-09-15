@@ -7,7 +7,7 @@
 [![CI](https://github.com/icvoss/django-icv-sitemaps/actions/workflows/ci.yml/badge.svg)](https://github.com/icvoss/django-icv-sitemaps/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
 [![Python](https://img.shields.io/pypi/pyversions/django-icv-sitemaps)](https://pypi.org/project/django-icv-sitemaps/)
-[![Django](https://img.shields.io/badge/django-5.1%2B-0C4B33)](https://www.djangoproject.com/)
+[![Django](https://img.shields.io/badge/django-5.2%2B-0C4B33)](https://www.djangoproject.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Django's built-in `django.contrib.sitemaps` loads every URL into memory at
@@ -61,8 +61,8 @@ but **fully standalone**: no other ICV packages required.
   (301/302/307/308) is evaluated before Django's URL resolver, a 410 rule
   only once the resolver has returned a 404, so it can never shadow a live
   view; fail-open design never breaks the request cycle
-- **Search engine ping**: Google, Bing, Yandex notified on content changes
-  (conditional on checksum comparison)
+- **Search engine ping**: optional notification after generation, disabled by
+  default because most engines have retired the ping protocol
 - **Multi-tenancy**: all discovery files are tenant-scoped; sitemap paths
   include tenant prefix to prevent collisions; tenant IDs are sanitised to
   prevent path-traversal attacks
@@ -74,7 +74,7 @@ but **fully standalone**: no other ICV packages required.
   read-only views
 - **Celery graceful degradation**: tasks work synchronously when Celery is not
   installed
-- **Testing utilities**: 8 factory-boy factories, pytest fixtures, and helpers
+- **Testing utilities**: 9 factory-boy factories, pytest fixtures, and helpers
   in `icv_sitemaps.testing`
 
 ---
@@ -793,15 +793,16 @@ sensible default so the package works out of the box for local development.
 | `ICV_SITEMAPS_MAX_FILE_SIZE_BYTES` | `int` | `52428800` | Maximum file size in bytes (protocol limit: 50 MB) |
 | `ICV_SITEMAPS_BATCH_SIZE` | `int` | `5000` | Queryset iteration batch size |
 | `ICV_SITEMAPS_GZIP` | `bool` | `True` | Compress files with gzip |
-| `ICV_SITEMAPS_PING_ENGINES` | `list` | `["google", "bing"]` | Engines to ping after regeneration |
-| `ICV_SITEMAPS_PING_ENABLED` | `bool` | `True` | Enable/disable pinging |
+| `ICV_SITEMAPS_STREAMING_WRITER` | `bool` | `True` | Stream entries to temporary files during generation; set `False` to use the buffered writer |
+| `ICV_SITEMAPS_PING_ENGINES` | `list` | `[]` | Engines to ping after regeneration when pinging is enabled |
+| `ICV_SITEMAPS_PING_ENABLED` | `bool` | `False` | Enable optional search-engine pinging |
 | `ICV_SITEMAPS_AUTO_SECTIONS` | `dict` | `{}` | Auto-register model sections (see Quick Start) |
 | `ICV_SITEMAPS_ROBOTS_EXTRA_DIRECTIVES` | `list` | `[]` | Extra lines appended to `robots.txt` |
 | `ICV_SITEMAPS_ROBOTS_SITEMAP_URL` | `str` | `""` | Override sitemap URL in `robots.txt` (auto-detected if empty) |
 | `ICV_SITEMAPS_CACHE_TIMEOUT` | `int` | `3600` | Cache TTL for discovery files (seconds) |
 | `ICV_SITEMAPS_TENANT_PREFIX_FUNC` | `str` | `""` | Dotted path to tenant prefix callable |
+| `ICV_SITEMAPS_QUERYSET_CONTEXT` | `str` | `""` | Dotted callable accepting a `SitemapSection` and returning a context manager entered while a model section's queryset is constructed and evaluated |
 | `ICV_SITEMAPS_ASYNC_GENERATION` | `bool` | `True` | Use Celery for background generation |
-| `ICV_SITEMAPS_STREAMING_THRESHOLD` | `int` | `100000` | URL count above which streaming generation is used |
 | `ICV_SITEMAPS_NEWS_MAX_AGE_DAYS` | `int` | `2` | Maximum age for news entries (Google requires < 2 days) |
 | `ICV_SITEMAPS_REDIRECT_ENABLED` | `bool` | `False` | Enable redirect middleware evaluation (opt-in) |
 | `ICV_SITEMAPS_REDIRECT_CACHE_TIMEOUT` | `int` | `300` | Cache TTL for redirect rule lookups (seconds) |
@@ -986,6 +987,33 @@ the configured value cannot resolve to a model.
 ICV_TENANT_MODEL = "myapp.Tenant"
 ```
 
+### RLS generation context
+
+Generation often runs outside a request, so a consumer whose model querysets
+are protected by row-level security must enter its own context before the
+queryset is evaluated. Configure a callable that accepts the package's
+`SitemapSection` and returns a context manager:
+
+```python
+# myapp/sitemaps.py
+from boundary.context import TenantContext
+
+
+def sitemap_queryset_context(section):
+    return TenantContext.using(section.tenant_ref)
+
+
+# settings.py
+ICV_SITEMAPS_QUERYSET_CONTEXT = "myapp.sitemaps.sitemap_queryset_context"
+```
+
+The package enters this context while it constructs and iterates every
+model-backed section's queryset. It does not import or configure the
+consumer's RLS library. A `SitemapMixin` model can instead, or additionally,
+override `get_sitemap_queryset_context(section)` when its context belongs to
+that model. Static section providers keep their existing no-request-context
+contract.
+
 ---
 
 ## Production Configuration
@@ -1071,8 +1099,7 @@ pytest tests/ -v
 ## Requirements
 
 - Python 3.11+
-- Django 5.1+
-- httpx 0.27+ (for search engine pings)
+- Django 5.2+
 - Celery 5.3+ (optional, for background generation)
 
 ---
