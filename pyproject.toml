@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-icv-sitemaps"
-version = "3.5.0"
+version = "3.6.0"
 description = "Scalable sitemap generation and web discovery infrastructure for Django — background XML sitemaps (standard/image/video/news), robots.txt, llms.txt, ads.txt, security.txt, humans.txt."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{name = "Nigel Copley"}]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: Django",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",

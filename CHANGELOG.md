@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.6.0] - 2026-09-15
+
+### Added
+
+- `ICV_SITEMAPS_QUERYSET_CONTEXT` and
+  `SitemapMixin.get_sitemap_queryset_context(section)` let a consumer enter
+  its own row-level-security context while a model-backed sitemap section
+  constructs and evaluates its queryset. Both hooks are opt-in and compose;
+  static section providers retain their existing no-request-context contract.
+
+### Changed
+
+- Installation and contributor documentation now reflects the supported
+  Django 5.2+ floor, streaming-writer setting, optional disabled-by-default
+  ping behaviour, and actual dependencies. The package classifier now reports
+  Production/Stable.
+
 ## [3.5.0] - 2026-09-07
 
 ### Changed

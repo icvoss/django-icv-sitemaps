@@ -1,6 +1,6 @@
 """Tests for image, video, and news sitemap generation."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -656,3 +656,160 @@ class TestEmptySectionGeneration:
         section.refresh_from_db()
         assert section.url_count == 0
         assert section.is_stale is False
+
+
+# ---------------------------------------------------------------------------
+# Queryset context
+# ---------------------------------------------------------------------------
+
+
+class TestQuerysetContext:
+    def test_setting_context_exposes_rows_only_during_generation(self, db, tmp_path, settings):
+        """A background RLS context wraps both queryset creation and iteration."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from sitemaps_testapp.models import Article
+
+        from tests.tenant_resolvers import rls_context_active
+
+        Article.objects.create(title="Visible only in RLS context", slug="rls-visible", is_published=True)
+
+        def rls_queryset(cls):
+            if not rls_context_active.get():
+                return cls.objects.none()
+            return cls.objects.filter(is_published=True)
+
+        bare_section = SitemapSectionFactory(
+            name="rls-context-bare",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+        contextual_section = SitemapSectionFactory(
+            name="rls-context-enabled",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+        with patch.object(Article, "get_sitemap_queryset", classmethod(rls_queryset)):
+            with _apply_conf_patches() as patches:
+                patches.enter_context(patch("icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT", ""))
+                assert generate_section(bare_section) == 0
+
+            with _apply_conf_patches() as patches:
+                patches.enter_context(
+                    patch(
+                        "icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT",
+                        "tests.tenant_resolvers.queryset_context",
+                    )
+                )
+                assert generate_section(contextual_section) == 1
+
+        assert rls_context_active.get() is False
+
+    def test_setting_context_stays_active_for_lazy_queryset_evaluation(self, db, tmp_path, settings):
+        """The context remains active until Django evaluates the queryset."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from django.db import connection
+        from sitemaps_testapp.models import Article
+
+        from tests.tenant_resolvers import rls_context_active
+
+        Article.objects.create(title="Lazy row", slug="lazy-row", is_published=True)
+        section = SitemapSectionFactory(
+            name="rls-lazy-evaluation",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+        article_query_seen = False
+
+        def assert_context_for_article_query(execute, sql, params, many, context):
+            nonlocal article_query_seen
+            if "sitemaps_testapp_article" in sql:
+                article_query_seen = True
+                assert rls_context_active.get()
+            return execute(sql, params, many, context)
+
+        with (
+            _apply_conf_patches() as patches,
+            connection.execute_wrapper(assert_context_for_article_query),
+        ):
+            patches.enter_context(
+                patch(
+                    "icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT",
+                    "tests.tenant_resolvers.queryset_context",
+                )
+            )
+            assert generate_section(section) == 1
+
+        assert article_query_seen
+        assert rls_context_active.get() is False
+
+    def test_context_factory_failure_marks_generation_failed_and_reraises(self, db, tmp_path, settings):
+        """Consumer context failures are recorded and remain visible to the caller."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from icv_sitemaps.models import SitemapGenerationLog
+
+        section = SitemapSectionFactory(
+            name="rls-context-failure",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+        with _apply_conf_patches() as patches:
+            patches.enter_context(
+                patch(
+                    "icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT",
+                    "tests.tenant_resolvers.raises_queryset_context",
+                )
+            )
+            with pytest.raises(RuntimeError, match="queryset context failed"):
+                generate_section(section)
+
+        log = SitemapGenerationLog.objects.get(section=section, action="generate_section")
+        assert log.status == "failed"
+        assert log.detail == "queryset context failed"
+        section.refresh_from_db()
+        assert section.is_stale is True
+
+    def test_model_hook_can_enter_its_own_context(self, db, tmp_path, settings):
+        """A SitemapMixin model can scope generation without a global setting."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from sitemaps_testapp.models import Article
+
+        from tests.tenant_resolvers import queryset_context, rls_context_active
+
+        Article.objects.create(title="Model hook row", slug="model-hook-row", is_published=True)
+
+        def rls_queryset(cls):
+            if not rls_context_active.get():
+                return cls.objects.none()
+            return cls.objects.filter(is_published=True)
+
+        @contextmanager
+        def model_context(cls, section):
+            with queryset_context(section):
+                yield
+
+        section = SitemapSectionFactory(
+            name="rls-model-hook",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+        with (
+            patch.object(Article, "get_sitemap_queryset", classmethod(rls_queryset)),
+            patch.object(Article, "get_sitemap_queryset_context", classmethod(model_context)),
+            _apply_conf_patches() as patches,
+        ):
+            patches.enter_context(patch("icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT", ""))
+            assert generate_section(section) == 1
+
+        assert rls_context_active.get() is False

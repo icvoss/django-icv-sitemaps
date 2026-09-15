@@ -8,7 +8,7 @@ Practical guide for contributors.
 
 - Python 3.11 or later
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- Django 5.1 or later (installed as part of the dev setup)
+- Django 5.2 or later (installed as part of the dev setup)
 
 No database server is required. The test suite uses SQLite.
 
@@ -26,7 +26,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 # Install the package and dev dependencies
 pip install -e ".[dev]"
-pip install "Django~=5.1" pytest pytest-django pytest-cov factory-boy httpx
+pip install "Django~=5.2" pytest pytest-django pytest-cov factory-boy
 ```
 
 ---

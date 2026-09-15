@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime
 
 
@@ -271,3 +272,20 @@ class SitemapMixin:
             pass
 
         return qs
+
+    @classmethod
+    def get_sitemap_queryset_context(cls, section):
+        """Return a context manager for this section's queryset evaluation.
+
+        The default context does nothing. A consumer whose model queries are
+        protected by row-level security can override this method to enter its
+        own tenant context while sitemap generation constructs and consumes
+        the queryset. ``section`` is the package's ``SitemapSection`` record,
+        so an override can use its ``tenant_ref`` or ``tenant_id`` according
+        to the consuming project's own tenancy contract.
+
+        This hook is also composed with the task-wide
+        ``ICV_SITEMAPS_QUERYSET_CONTEXT`` setting. The package neither imports
+        nor implements an RLS or tenant-context provider.
+        """
+        return nullcontext()
