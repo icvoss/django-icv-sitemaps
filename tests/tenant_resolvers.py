@@ -9,7 +9,6 @@ importable (mirrors ``tests/gone_resolvers.py``).
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-
 rls_context_active: ContextVar[bool] = ContextVar("rls_context_active", default=False)
 
 
@@ -21,6 +20,11 @@ def queryset_context(section):
         yield
     finally:
         rls_context_active.reset(token)
+
+
+def raises_queryset_context(section):
+    """Test that context-factory failures retain generation's normal error path."""
+    raise RuntimeError("queryset context failed")
 
 
 def raises(request):

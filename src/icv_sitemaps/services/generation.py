@@ -891,9 +891,8 @@ def _queryset_context(*, section, model_class):
     model_context_factory = getattr(model_class, "get_sitemap_queryset_context", None)
     model_context = model_context_factory(section) if model_context_factory else nullcontext()
 
-    with package_context:
-        with model_context:
-            yield
+    with package_context, model_context:
+        yield
 
 
 def _iter_model_section_entries(

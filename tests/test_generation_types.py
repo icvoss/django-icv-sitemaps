@@ -669,6 +669,7 @@ class TestQuerysetContext:
         settings.MEDIA_ROOT = str(tmp_path)
 
         from sitemaps_testapp.models import Article
+
         from tests.tenant_resolvers import rls_context_active
 
         Article.objects.create(title="Visible only in RLS context", slug="rls-visible", is_published=True)
@@ -707,11 +708,81 @@ class TestQuerysetContext:
 
         assert rls_context_active.get() is False
 
+    def test_setting_context_stays_active_for_lazy_queryset_evaluation(self, db, tmp_path, settings):
+        """The context remains active until Django evaluates the queryset."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from django.db import connection
+        from sitemaps_testapp.models import Article
+
+        from tests.tenant_resolvers import rls_context_active
+
+        Article.objects.create(title="Lazy row", slug="lazy-row", is_published=True)
+        section = SitemapSectionFactory(
+            name="rls-lazy-evaluation",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+        article_query_seen = False
+
+        def assert_context_for_article_query(execute, sql, params, many, context):
+            nonlocal article_query_seen
+            if "sitemaps_testapp_article" in sql:
+                article_query_seen = True
+                assert rls_context_active.get()
+            return execute(sql, params, many, context)
+
+        with (
+            _apply_conf_patches() as patches,
+            connection.execute_wrapper(assert_context_for_article_query),
+        ):
+            patches.enter_context(
+                patch(
+                    "icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT",
+                    "tests.tenant_resolvers.queryset_context",
+                )
+            )
+            assert generate_section(section) == 1
+
+        assert article_query_seen
+        assert rls_context_active.get() is False
+
+    def test_context_factory_failure_marks_generation_failed_and_reraises(self, db, tmp_path, settings):
+        """Consumer context failures are recorded and remain visible to the caller."""
+        settings.MEDIA_ROOT = str(tmp_path)
+
+        from icv_sitemaps.models import SitemapGenerationLog
+
+        section = SitemapSectionFactory(
+            name="rls-context-failure",
+            model_path="sitemaps_testapp.Article",
+            sitemap_type="standard",
+            is_stale=True,
+        )
+
+        with _apply_conf_patches() as patches:
+            patches.enter_context(
+                patch(
+                    "icv_sitemaps.conf.ICV_SITEMAPS_QUERYSET_CONTEXT",
+                    "tests.tenant_resolvers.raises_queryset_context",
+                )
+            )
+            with pytest.raises(RuntimeError, match="queryset context failed"):
+                generate_section(section)
+
+        log = SitemapGenerationLog.objects.get(section=section, action="generate_section")
+        assert log.status == "failed"
+        assert log.detail == "queryset context failed"
+        section.refresh_from_db()
+        assert section.is_stale is True
+
     def test_model_hook_can_enter_its_own_context(self, db, tmp_path, settings):
         """A SitemapMixin model can scope generation without a global setting."""
         settings.MEDIA_ROOT = str(tmp_path)
 
         from sitemaps_testapp.models import Article
+
         from tests.tenant_resolvers import queryset_context, rls_context_active
 
         Article.objects.create(title="Model hook row", slug="model-hook-row", is_published=True)
