@@ -19,6 +19,8 @@ source of startup breakage during migrations, fresh installs and
 
 from __future__ import annotations
 
+import logging
+
 from django.core.checks import Error as CheckError
 from django.core.checks import Warning as CheckWarning
 from django.core.checks import register
@@ -99,3 +101,61 @@ def check_tenant_model(app_configs, **kwargs):
         )
 
     return errors
+
+
+E002_ID = "icv_sitemaps.E002"
+_PACKAGE_LOGGER_NAME = "icv_sitemaps"
+
+
+def _has_reachable_handler(logger_name: str) -> bool:
+    """Return whether a handler is attached anywhere in ``logger_name``'s
+    hierarchy that a record from it would actually reach, walking ancestors
+    while ``propagate`` is true. ``logging.lastResort`` (the module-level
+    fallback that stderr-prints WARNING+ when nothing else is configured) is
+    not a configured handler and is ignored, per ADR-101 decision 3: it
+    exists precisely to be invisible/unmanaged, not a substitute for a real
+    handler the consumer chose.
+    """
+    logger = logging.getLogger(logger_name)
+
+    current: logging.Logger | None = logger
+    while current is not None:
+        if any(handler is not logging.lastResort for handler in current.handlers):
+            return True
+        if not current.propagate:
+            return False
+        current = current.parent
+
+    return False
+
+
+@register()
+def check_logging_handler_configured(app_configs, **kwargs):  # type: ignore[no-untyped-def]
+    """Fail with an Error when no handler reaches the icv_sitemaps logger hierarchy (icv_sitemaps.E002).
+
+    ADR-101 decision 3 and docs/STANDARDS.md section 15: a package that
+    emits through logging ships a boot-time check confirming the
+    consumer's LOGGING configuration actually routes it somewhere, and
+    it fails as an Error, not a Warning. The failures this package logs
+    (sitemap index and file serving errors, on-the-fly generation
+    failures, robots.txt, ads.txt and app-ads.txt rendering errors, and
+    search-engine ping failures) rely on this.
+    """
+    if _has_reachable_handler(_PACKAGE_LOGGER_NAME):
+        return []
+
+    logger_names = f"'{_PACKAGE_LOGGER_NAME}'"
+    return [
+        CheckError(
+            "No logging handler is configured to receive records from the "
+            f"{logger_names} logger (or any of its ancestors while "
+            "propagate=True), so failures icv-sitemaps logs will be invisible.",
+            hint=(
+                "Add a handler for the 'icv_sitemaps' logger (or the root logger, "
+                "if it propagates) in your LOGGING setting, e.g. "
+                "LOGGING['loggers']['icv_sitemaps'] = {'handlers': [...], "
+                "'level': 'WARNING', 'propagate': True}."
+            ),
+            id=E002_ID,
+        )
+    ]
