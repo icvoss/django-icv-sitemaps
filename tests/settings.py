@@ -58,3 +58,19 @@ if os.environ.get("ICV_SITEMAPS_TEST_TENANT_OVERRIDE"):
     # tenant_ref FK follows ICV_TENANT_MODEL rather than the auth.Group
     # floor (issue #50).
     ICV_TENANT_MODEL = os.environ["ICV_SITEMAPS_TEST_TENANT_OVERRIDE"]
+
+
+# ADR-101 decision 3: the logging-handler boot check (icv_sitemaps.E002) is an
+# Error, so every settings module that runs system checks (makemigrations,
+# migrate, check) must route the package logger to a handler. Propagation
+# stays on so caplog and the root logger still see the records, and the root
+# handler covers any sibling ICV package installed alongside this one.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"null": {"class": "logging.NullHandler"}},
+    "loggers": {
+        "icv_sitemaps": {"handlers": ["null"], "level": "WARNING", "propagate": True},
+    },
+    "root": {"handlers": ["null"]},
+}
